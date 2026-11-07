@@ -93,6 +93,22 @@ class DataFileTest(unittest.TestCase):
         self.assertIn("VERSION", text.splitlines()[2])
         self.assertTrue(text.rstrip().endswith("# END OF FILE"))
 
+    def test_background_writer_keeps_order(self):
+        """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
+        w = app.BgWriter()
+        p = os.path.join(self.tmp, "b.json")
+        for i in range(50):
+            def write(i=i):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(str(i))
+            w.put(write)
+        w.put(lambda: 1 / 0)   # 失敗しても後の書き込みは続く
+        w.put(lambda: open(p + ".done", "w").close())
+        w.flush()
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "49")
+        self.assertTrue(os.path.exists(p + ".done"))
+
 
 if __name__ == "__main__":
     unittest.main()

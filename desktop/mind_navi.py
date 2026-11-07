@@ -55,6 +55,8 @@ import shutil
 import hashlib
 import gzip
 import sys
+import threading
+import queue
 import uuid
 import zlib
 import xml.etree.ElementTree as ET
@@ -1663,9 +1665,9 @@ def tide_approx(d, lon, tz=9.0, hwi=6.0):
 
 
 QUAD_COLOR = {k: col for k, _n, _d, col in TASK_QUAD}
+CAL_FILL_TINT = 0.55   # カレンダーのタスクの塗り：元の色にどれだけ白を混ぜるか（小さいほど濃い。4象限を見分けやすく）
 QUAD_INITIAL = {"core": "C", "infra": "O", "ambition": "S", "bull": "D"}
 URG_COLOR = "#c2255c"
-CAL_FILL_TINT = 0.55   # カレンダーのタスクの塗り：元の色にどれだけ白を混ぜるか（小さいほど濃い。4象限を見分けやすく）
 ADHOC_COLOR, ADHOC_BG = "#f5b800", "#fff3bf"   # Adhocは黄色   # 緊急度が高いタスクの枠（赤紫）
 
 
@@ -2240,6 +2242,38 @@ AUTOSAVE_MS = 60 * 1000   # 1分ごとに自動保存（画面を切り替えた
 UNDO_MAX = 30             # Ctrl+Z で戻れる操作の数（ソフトを閉じても、次に開いたときに続けて戻れる）
 VERSION_DIR = os.path.join(BACKUP_DIR, "versions")   # 画面を切り替えるたびに残すバックアップ（ファイルごと）
 VERSION_KEEP = 30
+
+
+class BgWriter:
+    """バックアップ・版・元に戻す履歴のファイル書き込みを、画面の処理とは別に行う（画面を待たせない）。
+    書き込みは頼んだ順に1つずつ。終了するときやファイルを読み直すときは flush() で書き終わるのを待つ"""
+    def __init__(self):
+        self.q = queue.Queue()
+        self.th = None
+
+    def put(self, fn):
+        if self.th is None or not self.th.is_alive():
+            self.th = threading.Thread(target=self._run, daemon=True)
+            self.th.start()
+        self.q.put(fn)
+
+    def _run(self):
+        while True:
+            fn = self.q.get()
+            try:
+                fn()
+            except Exception:
+                pass
+            finally:
+                self.q.task_done()
+
+    def flush(self, timeout=30.0):
+        end = time.time() + timeout
+        while self.q.unfinished_tasks and time.time() < end:
+            time.sleep(0.01)
+
+
+BG_WRITER = BgWriter()
 
 
 def version_dir(path):
@@ -3000,13 +3034,21 @@ def run_gui(path=None):
             self._cw = {}
 
         def measure(self, text, displayof=None):
+            text = str(text)
+            sw = self.__dict__.setdefault("_sw", {})   # 文字列ごとの幅も覚える（同じ文字列を何度も測るため）
+            got = sw.get(text)
+            if got is not None:
+                return got
+            if len(sw) > 20000:
+                sw.clear()
             cw = self._cw
             tot = 0
-            for ch in str(text):
+            for ch in text:
                 w = cw.get(ch)
                 if w is None:
                     w = cw[ch] = tkfont.Font.measure(self, ch)
                 tot += w
+            sw[text] = tot
             return tot
 
         def metrics(self, *opts, **kw):
@@ -3036,6 +3078,8 @@ def run_gui(path=None):
             self.z, self.ox, self.oy = 1.0, 0.0, 0.0
             self.style = "office"
             self.boxes, self.ul = {}, {}
+            self._drawn_ids = set()   # 今の画面で実際に描いたノード
+            self._bsize_all, self._bsize = {}, {}   # 表示スタイルごとのノードの大きさ（画面の外のノードの見積もり用）
             self._fonts = {}
             fams = set(tkfont.families())
             default = tkfont.nametofont("TkDefaultFont").actual("family")
@@ -3125,11 +3169,13 @@ def run_gui(path=None):
                     txt = json.dumps(d, ensure_ascii=False, indent=1)
                     if self._bak_last.get(bp) == txt and os.path.exists(bp):
                         continue   # 前回から変わっていない
-                    os.makedirs(BACKUP_DIR, exist_ok=True)
-                    tmp = bp + ".tmp"
-                    with open(tmp, "w", encoding="utf-8") as fp:
-                        fp.write(txt)
-                    os.replace(tmp, bp)   # 書きかけで壊れないように置き換え
+                    def write(bp=bp, txt=txt):   # 書き込みは別の処理で（画面を待たせない）
+                        os.makedirs(BACKUP_DIR, exist_ok=True)
+                        tmp = bp + ".tmp"
+                        with open(tmp, "w", encoding="utf-8") as fp:
+                            fp.write(txt)
+                        os.replace(tmp, bp)   # 書きかけで壊れないように置き換え
+                    BG_WRITER.put(write)
                     self._bak_last[bp] = txt
                     n += 1
                 except (OSError, TypeError, ValueError):
@@ -3162,16 +3208,19 @@ def run_gui(path=None):
                 vd = version_dir(path)
                 if self._snap_last.get(vd) == txt:
                     return False
-                os.makedirs(vd, exist_ok=True)
                 stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
-                fp = os.path.join(vd, stamp + ".json")
-                with open(fp + ".tmp", "w", encoding="utf-8") as f:
-                    f.write(txt)
-                os.replace(fp + ".tmp", fp)
+
+                def write(vd=vd, txt=txt, stamp=stamp):   # 書き込みは別の処理で（画面を待たせない）
+                    os.makedirs(vd, exist_ok=True)
+                    fp = os.path.join(vd, stamp + ".json")
+                    with open(fp + ".tmp", "w", encoding="utf-8") as f:
+                        f.write(txt)
+                    os.replace(fp + ".tmp", fp)
+                    olds = sorted(f for f in os.listdir(vd) if f.endswith(".json"))
+                    for f in olds[:-VERSION_KEEP]:
+                        os.remove(os.path.join(vd, f))
+                BG_WRITER.put(write)
                 self._snap_last[vd] = txt
-                olds = sorted(f for f in os.listdir(vd) if f.endswith(".json"))
-                for f in olds[:-VERSION_KEEP]:
-                    os.remove(os.path.join(vd, f))
                 return True
             except (OSError, TypeError, ValueError):
                 return False
@@ -3317,20 +3366,27 @@ def run_gui(path=None):
 
         def _save_undo(self, path, history):
             """元に戻す履歴（直近 UNDO_MAX 操作）をファイルごとに保存。次に開いたときも続けて戻れる"""
-            try:
-                up = self._undo_path(path)
+            up = self._undo_path(path)
+            sha = self._file_sha.get(os.path.abspath(path))
+            hist = list(history[-UNDO_MAX:])   # 中身は文字列（変わらない）なので、そのまま別の処理に渡せる
+            sig = (sha, len(hist), id(hist[-1]) if hist else None)
+            last = self.__dict__.setdefault("_undo_sig", {})
+            if last.get(up) == sig:   # 前回から変わっていなければ書かない
+                return
+            last[up] = sig
+
+            def write():   # 圧縮と書き込みは別の処理で（画面を待たせない。速さ優先の圧縮）
                 os.makedirs(os.path.dirname(up), exist_ok=True)
-                rec = {"sha": self._file_sha.get(os.path.abspath(path)), "history": list(history[-UNDO_MAX:])}
-                with gzip.open(up + ".tmp", "wt", encoding="utf-8") as f:
-                    json.dump(rec, f, ensure_ascii=False)
+                with gzip.open(up + ".tmp", "wt", encoding="utf-8", compresslevel=1) as f:
+                    json.dump({"sha": sha, "history": hist}, f, ensure_ascii=False)
                 os.replace(up + ".tmp", up)
-            except (OSError, TypeError, ValueError):
-                pass
+            BG_WRITER.put(write)
 
         def _load_undo(self, path):
             """保存しておいた元に戻す履歴。ファイルがその後に別の場所で変わっていたら使わない"""
             if not path:
                 return []
+            BG_WRITER.flush()   # 書きかけがあれば書き終わってから読む
             try:
                 with gzip.open(self._undo_path(path), "rt", encoding="utf-8") as f:
                     rec = json.load(f)
@@ -3401,16 +3457,17 @@ def run_gui(path=None):
         def _drop_backup(self, path, slot=None):
             """保存した・変更を破棄したときはバックアップを消す"""
             for bp in {backup_path(path, slot) if path else None, backup_path(None, slot)}:
-                if bp and os.path.exists(bp):
-                    try:
-                        os.remove(bp)
-                    except OSError:
-                        pass
+                if bp:
+                    def drop(bp=bp):   # 書き込みと同じ順番で（先に頼んだ書き込みの後に消す）
+                        if os.path.exists(bp):
+                            os.remove(bp)
+                    BG_WRITER.put(drop)
                     self._bak_last.pop(bp, None)
 
         def _load_checked(self, p):
             """ファイルを読む。バックアップの方が新しければ、どちらから開くか確認する。
             戻り値: (マップ, バックアップから開いたか)"""
+            BG_WRITER.flush()   # バックアップの書きかけがあれば書き終わってから比べる
             try:
                 self._known_mtime[os.path.abspath(p)] = os.path.getmtime(p)
                 with open(p, "rb") as fb_:
@@ -3466,6 +3523,7 @@ def run_gui(path=None):
 
         def _backup_candidates(self, p):
             """そのファイルのバックアップ（新しい順）：[(更新時刻, ファイル)]"""
+            BG_WRITER.flush()
             out = []
             vd = version_dir(p)
             try:
@@ -3514,6 +3572,7 @@ def run_gui(path=None):
 
         def _offer_untitled_backups(self):
             """保存していない（無題の）マップのバックアップがあれば開くか確認"""
+            BG_WRITER.flush()
             try:
                 files = sorted(f for f in os.listdir(BACKUP_DIR)
                                if f.startswith("untitled_slot") and f.endswith(".json"))
@@ -4749,7 +4808,8 @@ def run_gui(path=None):
         def _periodic_save(self):
             """30秒ごと：変更が残っていて、入力・ドラッグ中でなければファイルへ保存（操作の邪魔をしない）"""
             try:
-                if self.dirty and self.path and not self._busy_editing() and not getattr(self, "_as_job", None):
+                if self.dirty and self.path and not self._busy_editing() and not self._typing_now() \
+                        and not getattr(self, "_as_job", None):
                     self._transition_save("定期")
             except Exception:
                 pass
@@ -7125,6 +7185,7 @@ def run_gui(path=None):
                 g(seq_, lambda: self.untask(self.sel) if self.sel in self.mm.nodes else None)
             g(f"<{MOD}-m>", lambda: self.memo_dialog())
             r.bind_all("<Button>", self.on_any_button, add="+")
+            r.bind_all("<Key>", lambda ev: setattr(self, "_last_key", time.monotonic()), add="+")   # 入力中は自動保存を待つ
             r.bind("<FocusIn>", lambda ev: self.adopt_outside_groceries() if ev.widget is r else None, add="+")   # マウスの追加ボタン → カレンダー／マインドマップ
             g(f"<{MOD}-p>", lambda: self.toggle_remind_pin())   # 重要期限：たたんでも常に表示
             g(f"<{MOD}-o>", self.open)
@@ -7237,9 +7298,13 @@ def run_gui(path=None):
             except (tk.TclError, AttributeError):
                 self._as_job = None
 
+        def _typing_now(self):
+            """文字を打っている最中か（最後のキーから1.5秒以内）。自動保存はその間は待つ"""
+            return time.monotonic() - getattr(self, "_last_key", 0.0) < 1.5
+
         def _action_autosave(self):
             self._as_job = None
-            if self._busy_editing():   # 入力・ドラッグの途中は終わってから
+            if self._busy_editing() or self._typing_now():   # 入力・ドラッグの途中は終わってから
                 self.schedule_autosave(1500)
                 return
             self.on_transition("操作")
@@ -7433,17 +7498,26 @@ def run_gui(path=None):
                     self.tb_left.pack(side="left")
                     self.tb_right.pack(side="right")
 
+        def _redraw_soon(self):
+            """描き直しをまとめて1回に（大きさの変更が続けて来たときに何度も描き直さない）"""
+            if not getattr(self, "_rd_job", None):
+                self._rd_job = self.root.after_idle(self._redraw_job)
+
+        def _redraw_job(self):
+            self._rd_job = None
+            self.redraw()
+
         def on_canvas_configure(self, ev):
             """キャンバスの大きさが変わったら、見ている所を保ったまま拡大率を合わせる"""
             W, H = ev.width, ev.height
             prev = getattr(self, "_csize", None)
             self._csize = (W, H)
             if not prev or prev[0] < 50 or prev[1] < 50 or W < 50 or H < 50:
-                self.redraw()
+                self._redraw_soon()
                 return
             pW, pH = prev
             if (W, H) == (pW, pH):
-                self.redraw()
+                self._redraw_soon()
                 return
             ref = getattr(self, "_zref", None)
             if ref is None or ref[0] != self.style or abs(self.z - ref[4]) > 1e-9:
@@ -7469,7 +7543,7 @@ def run_gui(path=None):
                 if changed and self.v_auto.get() and self.style not in TABLE_STYLES:
                     self.do_layout()
             self._zref = (st, zu, rW, rH, self.z)
-            self.redraw()
+            self._redraw_soon()
 
         def fit_view(self):
             c = self.canvas
@@ -7764,6 +7838,8 @@ def run_gui(path=None):
                     u = self.ul[nid]
                     self.ul[nid] = (u[0] + mx, u[1] + my, u[2] + mx)
             self.boxes[nid] = b
+            self._drawn_ids.add(nid)
+            self._bsize[nid] = ((b[2] - b[0]) / self.z, (b[3] - b[1]) / self.z)   # 画面の外のノードの大きさの見積もり用
             if (n.get("map_category") and not self.mm.is_level2(nid) and self.mm.parent(nid)) or \
                     (getattr(self, "catpick_mode", None) and self.mm.is_level2(nid)
                                          and not self._special_tree(nid)):   # マップのカテゴリ：紫の札
@@ -7793,6 +7869,16 @@ def run_gui(path=None):
             if n.get("file_link"):
                 self._draw_file_link(nid, b, n["file_link"])
             return b
+
+        def _approx_box(self, nid, n):
+            """描かないノードの箱の見積もり（前に描いたときの大きさ。まだ描いていなければ文字数から）"""
+            X, Y = self.sx(_to_float(n.get("x"))), self.sy(_to_float(n.get("y")))
+            sz = self._bsize.get(nid)
+            if sz:
+                w, h = sz[0] * self.z, sz[1] * self.z
+            else:
+                w, h = (len(n.get("label") or "") * 13 + 60) * self.z, 34 * self.z
+            return (X - w / 2, Y - h / 2, X + w / 2, Y + h / 2)
 
         def _redraw_sel(self, old, new):
             """選択だけが変わったとき：そのノード2つと選択の取っ手だけを描き直す（全体を描き直さない）"""
@@ -7846,25 +7932,51 @@ def run_gui(path=None):
             self._draw_background()
             info = self._tree_info()
             self.boxes, self.ul, self.flinks = {}, {}, {}
+            self._drawn_ids = set()
+            self._bsize = self._bsize_all.setdefault(self.style, {})
             draw = {"office": self._node_office, "mindmap": self._node_mindmap,
                     "note": self._node_note}[self.style]
             hidden = self.mm.hidden_nodes()
             inbox = set(self.inbox_items())
             if self.sel in hidden and self.sel not in inbox:
                 self.sel = None
+            # 速さのため、画面に入るノードだけを描く（画面の外のノードは大きさの見積もりだけ boxes に入れる）
+            W_, H_ = c.winfo_width(), c.winfo_height()
+            cull = not getattr(self, "_measuring", False) and W_ > 50 and H_ > 50
+            M_ = 120   # 画面の端からこの幅までは描いておく
             for nid, n in self.mm.nodes.items():
                 if nid in hidden:
                     continue
+                if cull and nid != self.sel and nid != self.drop_target:
+                    ab = self._approx_box(nid, n)
+                    if ab[2] < -M_ or ab[0] > W_ + M_ or ab[3] < -M_ or ab[1] > H_ + M_:
+                        self.boxes[nid] = ab
+                        continue
                 self._draw_one(nid, n, draw, info)
+            if cull:   # 画面を通る線の両端のノードは描く（線の位置を正確にするため）
+                D, need = self._drawn_ids, []
+                for e in self.mm.edges:
+                    s_, t_ = e["source"], e["target"]
+                    if s_ in D and t_ in D:
+                        continue
+                    a, b = self.boxes.get(s_), self.boxes.get(t_)
+                    if not a or not b:
+                        continue
+                    if s_ in D or t_ in D or not (max(a[2], b[2]) < -M_ or min(a[0], b[0]) > W_ + M_ or
+                                                  max(a[3], b[3]) < -M_ or min(a[1], b[1]) > H_ + M_):
+                        need += [k for k in (s_, t_) if k not in D]
+                for nid in dict.fromkeys(need):
+                    if nid not in self._drawn_ids and nid in self.mm.nodes:
+                        self._draw_one(nid, self.mm.nodes[nid], draw, info)
             self.split_cands = []
             if getattr(self, "v_split_hint", None) is not None and self.v_split_hint.get():
-                self.split_cands = [k for k in self._split_candidates() if k in self.boxes]
+                self.split_cands = [k for k in self._split_candidates() if k in self._drawn_ids]
                 for k in self.split_cands:   # 大きくなったツリー：☆ 分割候補（クリックで分割）
                     self._draw_split_star(k, self.boxes[k])
             self._draw_edges(info)
             c.tag_lower("edge")
             c.tag_lower("bg")
-            for nid in self.boxes:   # 折りたたみボタン（−：開いている／数字：閉じている件数）
+            for nid in self._drawn_ids:   # 折りたたみボタン（−：開いている／数字：閉じている件数）
                 if info[3].get(nid):   # 子を持つノードには常に表示
                     self._draw_toggle(nid, info[2].get(nid, 1))
             self.root.after_idle(self._draw_inbox)
@@ -8258,26 +8370,55 @@ def run_gui(path=None):
             return lambda n: n["id"] not in uh and (not pri or str(n.get("imp") or "") in pri or bool(n.get("shift_code")))
 
         def _day_counts(self, d):
-            """その日のタスク（予定・メモを除く）の 実施数, 総数"""
+            """その日のタスク（予定・メモを除く）の 実施数, 総数。
+            速さのため、前後の日もまとめて数えて、同じ描き直しの間は使い回す（データが変わったら数え直す）"""
+            key = (getattr(self, "_mod", 0), id(self.mm), self._cal_filter_key())
+            cache = getattr(self, "_dc_cache", None)
+            if cache is None or cache[0] != key:
+                cache = self._dc_cache = (key, {})
+                self.root.after_idle(lambda: setattr(self, "_dc_cache", None))   # 操作が終わったら捨てる
+            got = cache[1].get(d)
+            if got is None:
+                cache[1].update(self._day_counts_range(d - datetime.timedelta(days=62), d + datetime.timedelta(days=14)))
+                got = cache[1][d]
+            return got
+
+        def _cal_filter_key(self):
+            """カレンダーの絞り込みの状態（数え直しが必要かの判定用）"""
+            try:
+                return repr(self.mm.get_filter())
+            except Exception:
+                return None
+
+        def _day_counts_range(self, d0, d1):
+            """d0〜d1 の各日の (実施数, 総数)"""
             ok = self._cal_filter()
-            tot = dn = 0
+            res = {}
+            d = d0
+            while d <= d1:
+                res[d] = [0, 0]
+                d += datetime.timedelta(days=1)
             for n in self.mm.nodes.values():
                 if n.get("kind") in ("event", "note") or not n.get("sched_date") or not ok(n):
                     continue
-                if occurrences(n, d, d):
+                for d in occurrences(n, d0, d1):
+                    r = res[d]
                     if self._is_multi(n):   # 1日に何回か実施するタスク：1回の実施を1件として数える
                         tg = self._day_target(n)
-                        tot += tg
-                        dn += min(tg, self._day_count(n, d))
+                        r[1] += tg
+                        r[0] += min(tg, self._day_count(n, d))
                     else:
-                        tot += 1
-                        dn += 1 if self._occ_done(n, d) else 0
+                        r[1] += 1
+                        r[0] += 1 if self._occ_done(n, d) else 0
             for n in self.mm.nodes.values():   # 続きの時間枠も1件ずつ
-                for se in n.get("sessions") or []:
-                    if se.get("date") == d.isoformat() and ok(n):
-                        tot += 1
-                        dn += 1 if se.get("done") else 0
-            return dn, tot
+                if not n.get("sessions") or not ok(n):
+                    continue
+                for se in n["sessions"]:
+                    sd = _date(se.get("date"))
+                    if sd and d0 <= sd <= d1:
+                        res[sd][1] += 1
+                        res[sd][0] += 1 if se.get("done") else 0
+            return {k: (v[0], v[1]) for k, v in res.items()}
 
         def _cal_occurrences(self, days):
             """表示範囲の予定: {日付: [(開始, 終了, ノード)]}（繰り返しも展開）"""
@@ -12411,9 +12552,15 @@ def run_gui(path=None):
 
         def _draw_edges(self, info):
             c, z, B = self.canvas, self.z, self.boxes
+            W_, H_ = c.winfo_width(), c.winfo_height()
+            D = self._drawn_ids
+            cull = not getattr(self, "_measuring", False) and W_ > 50 and H_ > 50
             for e in self.mm.edges:
                 a, b = B.get(e["source"]), B.get(e["target"])
                 if not a or not b:
+                    continue
+                if cull and e["source"] not in D and e["target"] not in D and (   # 画面を通らない線は描かない
+                        max(a[2], b[2]) < 0 or min(a[0], b[0]) > W_ or max(a[3], b[3]) < 0 or min(a[1], b[1]) > H_):
                     continue
                 ax, ay = (a[0] + a[2]) / 2, (a[1] + a[3]) / 2
                 bx, by = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
@@ -16132,6 +16279,7 @@ def run_gui(path=None):
                     self.switch_slot(start)
                 self.record_all_view_states()   # 展開状態・表示位置を記録して次回そのまま開く
                 self.save_settings()
+                BG_WRITER.flush()   # バックアップなどの書き込みが終わるのを待ってから終了
                 self.root.destroy()
 
         # ================= マップ切替（上のボタン） =================
