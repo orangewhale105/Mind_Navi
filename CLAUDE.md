@@ -22,17 +22,21 @@
 1. **方針の変更は先に確認する**。`docs/SPEC.md` の「4. UI・デザインのルール」「6. 決定事項」と異なる実装をする場合は、実装前に Dr. Ishida に確認する。
 2. **mind_navi.py は全体を読まない**。巨大なため、`grep` で場所を探して必要な範囲だけ読み、Edit で部分的に直す。ファイル全文を出力・再生成しない。
 3. **1ファイル構成を保つ**（モジュールに分けない）。必須は標準ライブラリのみ。追加ライブラリは任意機能だけで使い、無くても起動できるようにする。
-4. ソース冒頭の「VERSION／最終更新日」と末尾の `# END OF FILE` を残す。最終更新日は変更のたびに更新する。版番号を上げるかどうかは Dr. Ishida に確認する。
+4. ソース冒頭の「VERSION／最終更新日」と末尾の `# END OF FILE` を残す。最終更新日は変更のたびに更新する。**版番号は指示（依頼）ごとに上げてよい**（PC版は 3.7 → 3.8 のように小数点以下を1つ。Android版は変えたときだけ versionName と versionCode を上げる。2026-11-08 Dr. Ishida の了承）。
 5. 変更したら `CHANGELOG.md` に追記し、新しく決まったことは `docs/SPEC.md`（主に6章・必要なら5章）に書く。チャットではなくこのリポジトリを正本にする。
-6. コミットは機能ごとに小さく、メッセージは日本語。
+6. コミットは機能ごとに小さく、メッセージは日本語。作業が終わったら、**確認なしで main への取り込みの依頼（プルリクエスト）を作ってよい**（2026-11-08 Dr. Ishida の了承。取り込み〔Merge〕は Dr. Ishida が行う）。
 7. 変更後は `python -m unittest discover tests` を実行する。GUI を確認するときは tkinter と xvfb を使う（クラウド環境に tkinter が無ければ `apt-get install python3-tk`）。
 
 ## UI の絶対ルール（全画面共通）
 - リストに追加するとき、別の入力欄（コンソール）を設けない。**リストに直接入力**する（いちばん下の「＋ 新しい◯◯」行など）。
 - **入力中に文字を大きくしない**。入力欄は表示中の文字と同じ大きさ・書体でセルに重ねる。
-- 4象限の色（カレンダー・タスクリスト・ガント共通）：Core＝赤 #e03131、Operational＝青 #1c7ed6、Strategic＝緑 #2f9e44、Divest＝灰 #868e96、Adhoc＝黄 #f5b800。コード内のキーは core/infra/ambition/bull（名前を変えない）。
+- 4象限の色（カレンダー・タスクリスト・ガント共通）：Core＝赤 #e03131、Operational＝紫 #7048e8（2026-11-08 に青から変更）、Strategic＝緑 #2f9e44、Divest＝灰 #868e96、Adhoc＝黄 #f5b800。コード内のキーは core/infra/ambition/bull（名前を変えない）。
 - タスクの重要度・必要度・緊急度は6段階で **1が最も高い**（1〜3が高）。購入分析は逆で6が高い（統一するかは未確定）。
 - 用語：「Adhoc」「タスクリスト」「買い物リスト」。
+
+## 速さ（第一優先）
+- 動作の速さを最優先する（Dr. Ishida の指示）。画面の描き直しは必要な範囲だけにし、操作中にファイルの書き込みで画面を止めない（`docs/SPEC.md` 6.1）。
+- マップは画面内のノードだけを描く（`redraw` の間引き）。全部のノードが描かれている前提のコードを書かない（実際に描いたものは `_drawn_ids`）。
 
 ## データの互換（壊さない）
 - データは1つの JSON ファイルにすべて入れる。同じフォルダに同内容の `<名前>.backup.json` を書く。
@@ -43,11 +47,12 @@
 ## Android版
 - ラムダ式・メソッド参照を使わない（Gradle なしのビルドで動かなくなる。匿名クラスで書く）。
 - ビルドは `android/MindNaviShopping/tools/build_apk.sh`（手順は `docs/SPEC.md` 11章）。
-- **署名の鍵とパスワードはリポジトリに入れない**。署名付き APK が必要なときは、鍵の受け渡し方を Dr. Ishida に確認する（方法は未確定）。
+- 署名の鍵とパスワードは `android/MindNaviShopping/signing/` にある（2026-11-08 に新しい鍵を作り、Dr. Ishida の決定でリポジトリに保管）。**この鍵を作り直したり消したりしない**（作り直すと、入っているアプリに上書きできなくなる）。
+- 配布：GitHub の「Actions」→「配布ファイルを作る」で、PC版 `mind_navi.py` と APK を Releases ページに置く（`docs/SPEC.md` 11.6）。
 
 ## 名称（旧称 TaskMap）
 - 2026-11-08 に TaskMap から Mind_Navi へ名前を変えた。新しく書くものはすべて Mind_Navi にする。
-- 旧名のまま残すもの（変えると既存データと食い違う）：Google カレンダーの照合キー `taskmap_id`、ICS の UID `@taskmap`、旧版からの取り込み元 `~/.taskmap_shopping.json` など4つ、起動時に旧設定を引き継ぐ処理（`migrate_old_local_files`・`_migrate_data_dir`）、署名の鍵の別名 `taskmap`、互換用の別名 `TaskMap = MindNavi`。詳細は `docs/SPEC.md` 冒頭。
+- 旧名のまま残すもの（変えると既存データと食い違う）：Google カレンダーの照合キー `taskmap_id`、ICS の UID `@taskmap`、旧版からの取り込み元 `~/.taskmap_shopping.json` など4つ、起動時に旧設定を引き継ぐ処理（`migrate_old_local_files`・`_migrate_data_dir`）、署名の鍵の別名 `taskmap`（新しい鍵でも同じ別名）、互換用の別名 `TaskMap = MindNavi`。詳細は `docs/SPEC.md` 冒頭。
 
 ## 既知の課題
 `docs/SPEC.md` の 9章（未確認事項・ヘルプとコードの食い違い）を参照。
