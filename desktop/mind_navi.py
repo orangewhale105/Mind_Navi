@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 3.6（ソース内の表記。表記を3.6にした日付は記録なし）  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 3.7  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v3.6。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v3.7。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
