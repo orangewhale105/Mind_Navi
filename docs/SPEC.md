@@ -451,6 +451,7 @@ python mind_navi.py --export plan.json out/plan   # CSV + GraphML を一括出�
 - データ互換の買い物リストアプリを Android で作る。データは Google ドライブ上のファイルを見に行き、買い物リストだけ別ファイルにはしない。
 - 納品形態：Android Studio 用のソース（ビルドしていない）→ **インストールして使う APK**（利用者の希望）。Google のサーバーに接続できない環境のため、Ubuntu の apt で入る Android のビルド道具（aapt・dx・apksigner 等）で、Gradle を使わずに作る方法にした（11章）。
 - 必要度の入力：スピナー（表示されない不具合）→ **タップで一覧から選ぶ**（PC版と同じ）。
+- 配布：チャットでファイルを受け取る → **GitHub の Releases ページからダウンロード**（PC版 mind_navi.py と APK。2026-11-08、利用者の決定）。署名の鍵はリポジトリに入れず GitHub の Secrets に登録し、GitHub Actions で署名付き APK を作る（11.6）。Windows版は当面 mind_navi.py をそのまま配る（exe・インストーラーは未着手）。
 
 ---
 
@@ -572,10 +573,21 @@ bash tools/build_apk.sh          # 出力：/tmp/mind_navi_apkbuild/MindNaviShop
 ### 11.4 署名
 - 鍵：`mind_navi.keystore`（別名 `taskmap`、RSA 2048、有効期間 20000日）。**鍵とパスワードはリポジトリに入れない**（2026-11-07 移行時に決定。利用者が Google ドライブ等に保管）。ビルド時は環境変数 `MIND_NAVI_KEYSTORE`・`MIND_NAVI_KS_PASS` で渡す。
 - 同じ鍵で署名した APK なら、設定（選んだファイル）を残したまま上書き更新できる。鍵を無くすと上書き更新できなくなる（アンインストールして入れ直しになる）。
-- 署名付き APK をクラウドの Claude がどう作るか（鍵の渡し方）は**未確定**。
+- 署名付き APK は、鍵とパスワードを GitHub の Secrets に登録し、GitHub Actions で作る（2026-11-08 決定。11.6）。
 
 ### 11.5 インストール
 - APK をスマホで開き、「提供元不明のアプリ」を許可してインストール。Play プロテクトの警告が出たら「インストールする」。
+
+### 11.6 配布ファイルの作成とダウンロード（GitHub Releases）
+- `.github/workflows/release.yml`（名前「配布ファイルを作る」）。GitHub の「Actions」→「配布ファイルを作る」→「Run workflow」で、自動テスト → 署名付き APK の作成 → Releases ページへの掲載を行う。
+- 置くファイル：`mind_navi.py`（PC版。Windows・Mac 共通）と `MindNaviShopping_v<versionName>.apk`（Android版）。
+- 版の名前（タグ）は `pc<PC版のVERSION>-android<versionName>`（例 `pc3.6-android1.2`）。同じ版でもう一度作ると、ファイルを差し替える。いつもいちばん新しく作ったものを「Latest」にする。
+- ダウンロード：リポジトリのページ右側の「Releases」→ 版を開き「Assets」のファイルを押す。
+- 事前に Secrets を2つ登録する（リポジトリの Settings → Secrets and variables → Actions → New repository secret）。
+  - `MIND_NAVI_KEYSTORE_B64`：鍵ファイルを文字にしたもの。Windows では鍵のあるフォルダで PowerShell を開き、次を実行するとクリップボードに入るので貼り付ける。
+    `[Convert]::ToBase64String([IO.File]::ReadAllBytes("mind_navi.keystore")) | Set-Clipboard`
+  - `MIND_NAVI_KS_PASS`：鍵のパスワード。
+- 「Run workflow」のボタンは、ワークフローのファイルが main ブランチにあるときだけ表示される。
 
 ---
 
