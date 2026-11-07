@@ -1588,7 +1588,7 @@ def idx_text(n):
 EVENING_HOUR = 18   # 夕方のお知らせ（この時刻以降の最初の確認で1日1回）
 # タスク分類の4象限（重要度×必要度。指標は順位のイメージで 1〜3 を「高」）：キー, 名前, 行動方針, 色
 TASK_QUAD = (("core", "Core（最優先）", "絶対にやるべき最優先事項（Must Run）。即座にリソースを集中投下する。", "#e03131"),
-             ("infra", "Operational（効率化・委任）", "地味だが止められないルーティン。自動化・効率化・他者への委任（Delegate）を検討する。", "#1c7ed6"),
+             ("infra", "Operational（効率化・委任）", "地味だが止められないルーティン。自動化・効率化・他者への委任（Delegate）を検討する。", "#7048e8"),   # 紫（2026-11-08 に青から変更：緑と見分けやすく）
              ("ambition", "Strategic（計画的投資）", "今すぐ必要ではないが、将来の差を生む自己投資。計画的（Strategic Plan）に時間を確保する。", "#2f9e44"),
              ("bull", "Divest（削減）", "無くしても誰も困らない虚無のタスク。即座に削減・廃棄（Eliminate）の対象とする。", "#868e96"))
 TASK_QUAD_AXIS = {"core": "第1象限：重要度 高 × 必要度 高", "infra": "第2象限：重要度 低 × 必要度 高",
@@ -1665,6 +1665,7 @@ def tide_approx(d, lon, tz=9.0, hwi=6.0):
 QUAD_COLOR = {k: col for k, _n, _d, col in TASK_QUAD}
 QUAD_INITIAL = {"core": "C", "infra": "O", "ambition": "S", "bull": "D"}
 URG_COLOR = "#c2255c"
+CAL_FILL_TINT = 0.55   # カレンダーのタスクの塗り：元の色にどれだけ白を混ぜるか（小さいほど濃い。4象限を見分けやすく）
 ADHOC_COLOR, ADHOC_BG = "#f5b800", "#fff3bf"   # Adhocは黄色   # 緊急度が高いタスクの枠（赤紫）
 
 
@@ -2555,7 +2556,7 @@ def run_gui(path=None):
 
     # ================= デザインスタイル（全画面の配色）：オフィス／ハッカー／深海／仏教 =================
     # 画面の色はすべて tkinter の _options を通るので、そこで色を置きかえる（描き直すたびに自動で反映、軽い辞書引き）。
-    # 4象限の色（赤・青・緑・灰）や黄などの鮮やかな色は色相を変えず、明るさだけ地の色に合わせて読みやすくする
+    # 4象限の色（赤・紫・緑・灰）や黄などの鮮やかな色は色相を変えず、明るさだけ地の色に合わせて読みやすくする
     import colorsys
     DESIGNS = {
         "office": {"name": "オフィス"},
@@ -9001,7 +9002,7 @@ def run_gui(path=None):
                     x_day, dw_day = x, dw
                     if slot in (0, 1):   # 2つ並べた段：左右の半分に描く
                         x, dw = x_day + (dw_day / 2 - 1 if slot == 1 else 0), dw_day / 2 + 1
-                    fill = "#e9ecef" if done else mix(col, 0.8)
+                    fill = "#e9ecef" if done else mix(col, CAL_FILL_TINT)
                     if n["id"] == moving:
                         fill = mix(fill, 0.6)
                     sel = nid == self.sel
@@ -9754,7 +9755,7 @@ def run_gui(path=None):
             done = self._occ_done(n, d)
             sel = nid == self.sel
             tags = ("node", "n:" + nid, "calev", "ce:" + key)
-            fill = "#e9ecef" if done else mix(col, 0.8)
+            fill = "#e9ecef" if done else mix(col, CAL_FILL_TINT)
             lec = bool(n.get("lecture_key"))
             if n.get("shift_code") and n["shift_code"].upper() in self._shift_strong():   # N8・F8 など
                 fill, col, lec = "#e03131", "#ffd43b", False
@@ -10116,7 +10117,7 @@ def run_gui(path=None):
             col = self._task_color(n, info)
             sel = nid == self.sel
             tags = ("node", "n:" + nid, "calev", "ce:" + key)
-            fill = "#e9ecef" if done else mix(col, 0.78)
+            fill = "#e9ecef" if done else mix(col, CAL_FILL_TINT)
             if faded:
                 fill = mix(fill, 0.6)
             lec = bool(n.get("lecture_key"))   # 取り込んだ講義：濃い紫の塗りつぶしで強く目立たせる
@@ -10277,7 +10278,7 @@ def run_gui(path=None):
             self.boxes.setdefault(nid, (x1, y1, x2, y2))
 
         def _task_color(self, n, info):
-            """カレンダー・スケジュールのタスクの色：4象限（コア＝赤・オペレーショナル＝青・ストラテジック＝緑・
+            """カレンダー・スケジュールのタスクの色：4象限（コア＝赤・オペレーショナル＝紫・ストラテジック＝緑・
             ディベスト＝灰）、Adhoc＝黄。指標がなければ枝の色"""
             if n.get("_leave") or n.get("shift_code") or n.get("lecture_key"):
                 return n.get("color") or self.branch_color(n["id"], info)
