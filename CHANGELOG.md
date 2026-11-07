@@ -2,6 +2,10 @@
 
 新しいものを上に書く。詳しい経緯は `docs/SPEC.md` の12章。
 
+## 2026-11-08 配布ファイルを Releases ページからダウンロードできるように
+- GitHub Actions のワークフロー「配布ファイルを作る」（`.github/workflows/release.yml`）を追加。PC版 `mind_navi.py` と署名付き Android版 APK を Releases ページに置く。
+- 署名の鍵とパスワードは GitHub の Secrets（`MIND_NAVI_KEYSTORE_B64`・`MIND_NAVI_KS_PASS`）で渡す。手順は `docs/SPEC.md` 11.6。
+
 ## 2026-11-08 名称を Mind_Navi に変更（旧称 TaskMap）
 - PC版：`desktop/taskmap.py` → `desktop/mind_navi.py`。画面の表示名、データファイルの app 欄、PC ごとの設定ファイル（`~/.mind_navi_*`）、Google ドライブのデータフォルダ（`Mind_Navi`）を新しい名前に。
 - PC版：起動時に旧設定（`~/.taskmap_*`）とバックアップを新しい名前へコピー。データフォルダが `TaskMap` なら同じ場所の `Mind_Navi` へファイルをコピーして切り替え（元は残す）。旧名のデータファイルもそのまま開ける。

@@ -1,0 +1,84 @@
+# Mind_Navi 配布ファイルの作成（PC版 mind_navi.py ＋ Android版 APK を Releases ページに置く）
+# 最終更新日 2026-11-08
+# 使い方：GitHub の「Actions」→「配布ファイルを作る」→「Run workflow」。
+# 署名の鍵はリポジトリに入れない。GitHub の Secrets に次の2つを登録しておく（手順は docs/SPEC.md 11.6）。
+#   MIND_NAVI_KEYSTORE_B64 … mind_navi.keystore を文字（Base64）にしたもの
+#   MIND_NAVI_KS_PASS      … 鍵のパスワード
+name: 配布ファイルを作る
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 鍵が登録されているか確認
+        env:
+          KS_B64: ${{ secrets.MIND_NAVI_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.MIND_NAVI_KS_PASS }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ]; then
+            echo "::error::Secrets に MIND_NAVI_KEYSTORE_B64 と MIND_NAVI_KS_PASS を登録してください（docs/SPEC.md 11.6）"
+            exit 1
+          fi
+
+      - name: 自動テスト
+        run: python3 -m unittest discover tests
+
+      - name: Android のビルド道具を入れる
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aapt android-sdk-platform-23 apksigner dalvik-exchange zipalign openjdk-21-jdk-headless
+
+      - name: Android版 APK を作る（署名付き）
+        env:
+          KS_B64: ${{ secrets.MIND_NAVI_KEYSTORE_B64 }}
+          MIND_NAVI_KS_PASS: ${{ secrets.MIND_NAVI_KS_PASS }}
+        run: |
+          KS="$RUNNER_TEMP/mind_navi.keystore"
+          # certutil で作った文字（BEGIN/END の行・改行つき）でも読めるようにする
+          printf '%s' "$KS_B64" | grep -v -- '-----' | tr -d '\r\n ' | base64 -d > "$KS"
+          export MIND_NAVI_KEYSTORE="$KS"
+          export BUILD_DIR="$RUNNER_TEMP/apkbuild"
+          bash android/MindNaviShopping/tools/build_apk.sh
+          rm -f "$KS"
+
+      - name: Releases ページに置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PCV=$(grep -oP 'VERSION \K[0-9.]+' desktop/mind_navi.py | head -1)
+          ANV=$(grep -oP "^\s*versionName '\K[^']+" android/MindNaviShopping/app/build.gradle)
+          ANC=$(grep -oP '^\s*versionCode \K\d+' android/MindNaviShopping/app/build.gradle)
+          TAG="pc${PCV}-android${ANV}"
+          mkdir -p dist
+          cp desktop/mind_navi.py dist/mind_navi.py
+          cp "$RUNNER_TEMP/apkbuild/MindNaviShopping_v${ANV}.apk" dist/
+          cat > dist/notes.md <<EOF
+          ## Mind_Navi 配布ファイル
+
+          | ファイル | 内容 |
+          |---|---|
+          | \`mind_navi.py\` | PC版（Windows・Mac）VERSION ${PCV}。Python を入れた PC で開いて起動 |
+          | \`MindNaviShopping_v${ANV}.apk\` | Android版 買い物リスト ${ANV}（versionCode ${ANC}）。スマホで開いてインストール |
+
+          - 作成日時：$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M')（日本時間）
+          - 元にした変更：${GITHUB_SHA:0:7}（ブランチ ${GITHUB_REF_NAME}）
+          - APK のインストール：スマホで開き「提供元不明のアプリ」を許可。Play プロテクトの警告が出たら「インストールする」。
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 同じ版をもう一度作ったときは、ファイルを差し替える
+            gh release upload "$TAG" dist/mind_navi.py "dist/MindNaviShopping_v${ANV}.apk" --clobber
+            gh release edit "$TAG" --notes-file dist/notes.md --latest
+          else
+            gh release create "$TAG" dist/mind_navi.py "dist/MindNaviShopping_v${ANV}.apk" \
+              --target "$GITHUB_SHA" --title "Mind_Navi PC版 ${PCV} ／ Android版 ${ANV}" \
+              --notes-file dist/notes.md --latest
+          fi
+# END OF FILE
