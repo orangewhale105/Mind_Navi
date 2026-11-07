@@ -5482,13 +5482,13 @@ def run_gui(path=None):
             sp.bind("<Configure>", lambda ev: self.root.after_idle(self._sec_fit), add="+")
             sp.bind("<Double-Button-1>", self._sec_reset, add="+")
 
-            # 0) ウィークリーコンパス（いちばん上。金色の帯の「たたむ」で開閉）
+            # 0) ミッションステートメント（いちばん上。クリックで書き込み）
+            mi = section("mission", "ミッションステートメント", scroll=False)
+            self.mission_bar(mi).pack(fill="x")
+            # 1) ウィークリーコンパス（ミッションのすぐ下。金色の帯の「たたむ」で開閉）
             cp = section("compass", "ウィークリーコンパス", header=False)
             self.compass = tk.Frame(cp, bg="#fff8e1", highlightthickness=0)
             self.compass.pack(fill="both", expand=True)
-            # 1) ミッションステートメント（コンパスのすぐ下。クリックで書き込み）
-            mi = section("mission", "ミッションステートメント", scroll=False)
-            self.mission_bar(mi).pack(fill="x")
             # 2) 週間実績（コンパスの週の達成・トライアル・積み上げ）
             wk = section("weekly", "週間実績", scroll=True, stretch="always")
             self.rate_cv = None
@@ -7403,7 +7403,7 @@ def run_gui(path=None):
             self.set_status("区切りの大きさを自動に戻しました")
 
         def _fit_compass_pane(self):
-            """コンパス欄（左パネルのいちばん上）の高さを中身に合わせる"""
+            """コンパス欄（左パネルのミッションの下）の高さを中身に合わせる"""
             self._sec_fit()
 
         def _apply_responsive(self):
