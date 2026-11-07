@@ -1,0 +1,31 @@
+// Mind_Navi 買い物リスト（Android）  VERSION 1.2（versionCode 3）  最終更新日 2026-11-08
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'jp.mindnavi.shopping'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'jp.mindnavi.shopping'
+        minSdk 26
+        targetSdk 34
+        versionCode 3
+        versionName '1.2'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// 外部ライブラリは使わない（Android の標準機能だけ）
+// # END OF FILE

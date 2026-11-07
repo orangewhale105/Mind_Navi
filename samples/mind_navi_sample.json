@@ -1,0 +1,1091 @@
+{
+  "app": "Mind_Navi",
+  "version": 2,
+  "nodes": [
+    {
+      "id": "85930ef7",
+      "label": "サンプル目標：研究を進める",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 135.0,
+      "y": 472.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "color": "#1c7ed6"
+    },
+    {
+      "id": "025f7501",
+      "label": "研究",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 343.0,
+      "y": 446.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "map_category": true
+    },
+    {
+      "id": "7b2d00b4",
+      "label": "論文の下書き",
+      "kind": "task",
+      "status": "doing",
+      "priority": "",
+      "start": "2026-11-01",
+      "due": "2026-11-30",
+      "note": "メモの例：章立てを考える",
+      "x": 551.0,
+      "y": 238.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "imp": 1,
+      "need": 2,
+      "urg": 1,
+      "sched_date": "2026-11-09",
+      "sched_start": "09:00",
+      "sched_end": "10:30",
+      "alarm": {
+        "before": 10,
+        "sound": true
+      },
+      "notable": true,
+      "gcal_id": "（Googleカレンダーの予定ID・例）",
+      "gcal_updated": "2026-11-07T01:00:00.000Z",
+      "gcal_hash": "（日時の指紋・例）",
+      "file_link": {
+        "dir": "parent",
+        "path": "C:/example/other_map.json",
+        "name": "other_map.json",
+        "node": "7b2d00b4"
+      }
+    },
+    {
+      "id": "21ec063f",
+      "label": "毎朝のストレッチ",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 290.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "imp": 4,
+      "need": 2,
+      "urg": 5,
+      "sched_date": "2026-11-02",
+      "repeat": {
+        "freq": "daily",
+        "interval": 1
+      },
+      "daily_order": 10,
+      "done_dates": [
+        "2026-11-05"
+      ],
+      "exdates": [
+        "2026-11-04"
+      ],
+      "trial": true
+    },
+    {
+      "id": "24d37350",
+      "label": "週次ミーティング",
+      "kind": "event",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 342.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "sched_date": "2026-11-10",
+      "sched_start": "16:00",
+      "sched_end": "17:00",
+      "repeat": {
+        "freq": "weekly",
+        "interval": 1,
+        "byweekday": [
+          1
+        ],
+        "until": "2027-03-31"
+      }
+    },
+    {
+      "id": "dae4101d",
+      "label": "水を飲む",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 394.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "sched_date": "2026-11-01",
+      "repeat": {
+        "freq": "daily",
+        "interval": 1
+      },
+      "multi": true,
+      "day_target": 3,
+      "day_counts": {
+        "2026-11-06": 3,
+        "2026-11-07": 1
+      },
+      "done_dates": [
+        "2026-11-06"
+      ]
+    },
+    {
+      "id": "ca9ed040",
+      "label": "英単語",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 446.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "sched_date": "2026-11-01",
+      "repeat": {
+        "freq": "daily",
+        "interval": 1
+      },
+      "iter": true,
+      "done_dates": [
+        "2026-11-05",
+        "2026-11-06"
+      ]
+    },
+    {
+      "id": "49619b54",
+      "label": "データ整理（繰り返しタスク）",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 498.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "reusable": true,
+      "imp": 3,
+      "need": 3,
+      "urg": 4,
+      "sessions": [
+        {
+          "id": "a1b2c3",
+          "date": "2026-11-09",
+          "start": "13:00",
+          "end": "14:00",
+          "done": true
+        },
+        {
+          "id": "d4e5f6",
+          "date": "2026-11-11",
+          "start": null,
+          "end": null,
+          "done": false
+        }
+      ]
+    },
+    {
+      "id": "a7ac1c59",
+      "label": "スライド作成（続きの時間枠あり）",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 550.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "imp": 2,
+      "need": 5,
+      "urg": 3,
+      "sched_date": "2026-11-12",
+      "sched_start": "10:00",
+      "sched_end": "11:00",
+      "sessions": [
+        {
+          "id": "f1e2d3",
+          "date": "2026-11-13",
+          "start": "10:00",
+          "end": "11:30",
+          "done": false
+        }
+      ],
+      "postpone": 1,
+      "postpone_log": [
+        {
+          "at": "2026-11-07T09:30",
+          "from": "2026-11-07",
+          "to": "2026-11-12"
+        }
+      ],
+      "snoozes": {
+        "2026-11-12": 1
+      }
+    },
+    {
+      "id": "88b0482a",
+      "label": "カレンダー",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 135.0,
+      "y": 790.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "calendar_root": true
+    },
+    {
+      "id": "ebec991a",
+      "label": "免許更新",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 343.0,
+      "y": 790.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "sched_date": "2027-03-15",
+      "remind": {
+        "since": "2026-11-07",
+        "mode": "before",
+        "before": 30,
+        "pin": true
+      }
+    },
+    {
+      "id": "cfebe5d0",
+      "label": "完了したタスクの例",
+      "kind": "task",
+      "status": "done",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 602.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "done_at": "2026-11-07T10:00:00",
+      "imp": 5,
+      "need": 5,
+      "urg": 6,
+      "sched_date": "2026-11-05",
+      "sched_start": "15:00",
+      "sched_end": "15:30"
+    },
+    {
+      "id": "c2020d48",
+      "label": "隠したタスクの例",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 551.0,
+      "y": 654.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "hidden": true,
+      "hidden_at": "2026-11-07T10:00:00"
+    },
+    {
+      "id": "2079443b",
+      "label": "アイデア（メモノード）",
+      "kind": "note",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "思いついたこと",
+      "x": 343.0,
+      "y": 706.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16"
+    },
+    {
+      "id": "bd5f0f18",
+      "label": "Lecture",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 135.0,
+      "y": 70.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "lecture_root": true
+    },
+    {
+      "id": "72e6e860",
+      "label": "運動学",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 343.0,
+      "y": 70.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16"
+    },
+    {
+      "id": "4861761d",
+      "label": "運動学 第1回（1年・Aクラス）",
+      "kind": "task",
+      "status": "todo",
+      "priority": "1",
+      "start": "",
+      "due": "",
+      "note": "理学療法学科 1年 2限 クラスA\n講義進行表：sample.xlsx\n内容の例",
+      "x": 551.0,
+      "y": 70.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "lecture_key": "1年|2026-11-10|2|運動学",
+      "alarms": [
+        {
+          "day": -1,
+          "at": "17:00"
+        },
+        {
+          "day": 0,
+          "at": "08:45"
+        },
+        {
+          "before": 60
+        },
+        {
+          "before": 15,
+          "sound": true
+        }
+      ],
+      "sched_date": "2026-11-10",
+      "sched_start": "10:45",
+      "sched_end": "12:15",
+      "lecture_class": "A"
+    },
+    {
+      "id": "cac0bb94",
+      "label": "Shift",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 135.0,
+      "y": 154.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "shift_root": true
+    },
+    {
+      "id": "cffc8197",
+      "label": "2026年11月",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 343.0,
+      "y": 154.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16"
+    },
+    {
+      "id": "000b46da",
+      "label": "夜勤（例）",
+      "kind": "event",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "勤務表：sample.pdf",
+      "x": 551.0,
+      "y": 154.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "shift_code": "N8",
+      "sched_date": "2026-11-14"
+    },
+    {
+      "id": "8626cfbc",
+      "label": "Adhoc",
+      "kind": "goal",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "",
+      "x": 135.0,
+      "y": 874.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "adhoc_root": true
+    },
+    {
+      "id": "2f6a82a7",
+      "label": "買い物：牛乳 ×2、卵",
+      "kind": "task",
+      "status": "todo",
+      "priority": "",
+      "start": "",
+      "due": "",
+      "note": "【買い物リスト】\n・牛乳 ×2　¥440\n・卵　¥300\n合計 ¥740（2品）",
+      "x": 343.0,
+      "y": 874.0,
+      "created": "2026-11-07T23:48:16",
+      "updated": "2026-11-07T23:48:16",
+      "focus": true,
+      "adhoc": true
+    }
+  ],
+  "edges": [
+    {
+      "source": "85930ef7",
+      "target": "025f7501",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "7b2d00b4",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "21ec063f",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "24d37350",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "dae4101d",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "ca9ed040",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "49619b54",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "a7ac1c59",
+      "relation": "child"
+    },
+    {
+      "source": "88b0482a",
+      "target": "ebec991a",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "cfebe5d0",
+      "relation": "child"
+    },
+    {
+      "source": "025f7501",
+      "target": "c2020d48",
+      "relation": "child"
+    },
+    {
+      "source": "85930ef7",
+      "target": "2079443b",
+      "relation": "child"
+    },
+    {
+      "source": "7b2d00b4",
+      "target": "a7ac1c59",
+      "relation": "link"
+    },
+    {
+      "source": "bd5f0f18",
+      "target": "72e6e860",
+      "relation": "child"
+    },
+    {
+      "source": "72e6e860",
+      "target": "4861761d",
+      "relation": "child"
+    },
+    {
+      "source": "cac0bb94",
+      "target": "cffc8197",
+      "relation": "child"
+    },
+    {
+      "source": "cffc8197",
+      "target": "000b46da",
+      "relation": "child"
+    },
+    {
+      "source": "8626cfbc",
+      "target": "2f6a82a7",
+      "relation": "child"
+    }
+  ],
+  "view": {
+    "style": "calendar",
+    "auto_layout": true,
+    "positions": {
+      "office": {
+        "85930ef7": [
+          182.2,
+          511.4
+        ],
+        "025f7501": [
+          432.7,
+          488.4
+        ],
+        "7b2d00b4": [
+          631.7,
+          244.5
+        ],
+        "21ec063f": [
+          646.4,
+          309.4
+        ],
+        "24d37350": [
+          645.4,
+          374.4
+        ],
+        "dae4101d": [
+          617.0,
+          439.4
+        ],
+        "ca9ed040": [
+          609.7,
+          504.3
+        ],
+        "49619b54": [
+          690.5,
+          569.3
+        ],
+        "a7ac1c59": [
+          705.2,
+          634.2
+        ],
+        "88b0482a": [
+          135.0,
+          868.8
+        ],
+        "ebec991a": [
+          343.0,
+          868.8
+        ],
+        "cfebe5d0": [
+          653.8,
+          689.8
+        ],
+        "c2020d48": [
+          635.9,
+          738.8
+        ],
+        "2079443b": [
+          457.4,
+          787.8
+        ],
+        "bd5f0f18": [
+          135.0,
+          70.0
+        ],
+        "72e6e860": [
+          343.0,
+          70.0
+        ],
+        "4861761d": [
+          551.0,
+          70.0
+        ],
+        "cac0bb94": [
+          135.0,
+          154.0
+        ],
+        "cffc8197": [
+          343.0,
+          154.0
+        ],
+        "000b46da": [
+          551.0,
+          154.0
+        ],
+        "8626cfbc": [
+          135.0,
+          952.8
+        ],
+        "2f6a82a7": [
+          343.0,
+          952.8
+        ]
+      },
+      "calendar": {
+        "85930ef7": [
+          135.0,
+          472.0
+        ],
+        "025f7501": [
+          343.0,
+          446.0
+        ],
+        "7b2d00b4": [
+          551.0,
+          238.0
+        ],
+        "21ec063f": [
+          551.0,
+          290.0
+        ],
+        "24d37350": [
+          551.0,
+          342.0
+        ],
+        "dae4101d": [
+          551.0,
+          394.0
+        ],
+        "ca9ed040": [
+          551.0,
+          446.0
+        ],
+        "49619b54": [
+          551.0,
+          498.0
+        ],
+        "a7ac1c59": [
+          551.0,
+          550.0
+        ],
+        "88b0482a": [
+          135.0,
+          790.0
+        ],
+        "ebec991a": [
+          343.0,
+          790.0
+        ],
+        "cfebe5d0": [
+          551.0,
+          602.0
+        ],
+        "c2020d48": [
+          551.0,
+          654.0
+        ],
+        "2079443b": [
+          343.0,
+          706.0
+        ],
+        "bd5f0f18": [
+          135.0,
+          70.0
+        ],
+        "72e6e860": [
+          343.0,
+          70.0
+        ],
+        "4861761d": [
+          551.0,
+          70.0
+        ],
+        "cac0bb94": [
+          135.0,
+          154.0
+        ],
+        "cffc8197": [
+          343.0,
+          154.0
+        ],
+        "000b46da": [
+          551.0,
+          154.0
+        ],
+        "8626cfbc": [
+          135.0,
+          874.0
+        ],
+        "2f6a82a7": [
+          343.0,
+          874.0
+        ]
+      }
+    },
+    "idx_rank_v1": true,
+    "views": {
+      "office": [
+        0.952,
+        19.1,
+        0.0
+      ]
+    },
+    "mission": {
+      "text": "（例）学び続け、人の役に立つ"
+    },
+    "compass": {
+      "2026-11-09": {
+        "goals": [
+          {
+            "text": "論文の章立てを決める",
+            "done": false
+          },
+          {
+            "text": "毎日ストレッチ",
+            "done": true
+          }
+        ],
+        "items": []
+      }
+    },
+    "day_compass": {
+      "2026-11-09": "午前は集中作業"
+    },
+    "place": {
+      "name": "那覇",
+      "lat": 26.2124,
+      "lon": 127.6809,
+      "tz": 9.0,
+      "pc": "47",
+      "hc": "",
+      "hwi": 6.0,
+      "show_sun": true,
+      "show_tide": true
+    },
+    "vipassana": {
+      "minutes": 10,
+      "sound_on": true,
+      "sound": "波のせせらぎ",
+      "sessions": [
+        {
+          "date": "2026-11-07",
+          "start": "06:30",
+          "min": 10,
+          "quality": 4,
+          "sound": "波のせせらぎ"
+        }
+      ]
+    },
+    "reviews": {
+      "D:2026-11-07": "今日の振り返りの例",
+      "W:2026-11-02": "今週の振り返りの例",
+      "M:2026-11": "",
+      "Y:2026": ""
+    },
+    "lifeplan": {
+      "birth": "1980-01-01",
+      "lanes": [
+        "仕事・キャリア",
+        "学び・研究",
+        "家族・住まい",
+        "健康・趣味",
+        "お金",
+        "旅・挑戦"
+      ],
+      "events": [
+        {
+          "id": "ev000001",
+          "created": "2026-11-07T10:00:00",
+          "title": "定年（例）",
+          "age": 60,
+          "age_from": "",
+          "lane": "仕事・キャリア",
+          "timer": true,
+          "note": ""
+        }
+      ]
+    },
+    "memo": {
+      "boards": [
+        {
+          "id": "bd000001",
+          "name": "メモ1",
+          "items": [
+            {
+              "id": "it000001",
+              "type": "text",
+              "x": 40,
+              "y": 40,
+              "w": 240,
+              "text": "ホワイトボードの文字の例",
+              "color": "#212529",
+              "imp": 1
+            },
+            {
+              "id": "it000002",
+              "type": "stroke",
+              "points": [
+                10,
+                10,
+                60,
+                40,
+                120,
+                30
+              ],
+              "color": "#e03131",
+              "width": 3,
+              "marker": false
+            }
+          ]
+        }
+      ],
+      "cur": 0
+    },
+    "shopping": {
+      "v": 3,
+      "categories": [
+        "食品",
+        "日用品",
+        "衣類",
+        "趣味",
+        "仕事・勉強",
+        "交際",
+        "その他"
+      ],
+      "items": [
+        {
+          "id": "sh000001",
+          "name": "本（例）",
+          "cat": "趣味",
+          "life": 2,
+          "value": 1,
+          "price": 1500,
+          "daily": false,
+          "added": "2026-11-01",
+          "bought": "",
+          "plan": true,
+          "skip": false
+        },
+        {
+          "id": "sh000002",
+          "name": "洗剤（例）",
+          "cat": "日用品",
+          "life": 1,
+          "value": 4,
+          "price": 400,
+          "daily": true,
+          "added": "2026-11-01",
+          "bought": "2026-11-03",
+          "plan": false,
+          "skip": false
+        }
+      ],
+      "sorts": [
+        [
+          "quad",
+          false
+        ],
+        [
+          "life",
+          true
+        ],
+        [
+          "value",
+          true
+        ]
+      ],
+      "order": [
+        "sh000001",
+        "sh000002"
+      ],
+      "groups": {
+        "sh000001": "invest",
+        "sh000002": "need"
+      }
+    },
+    "groceries": {
+      "items": [
+        {
+          "id": "gr000001",
+          "name": "牛乳",
+          "need": 2,
+          "qty": 2,
+          "price": 220,
+          "bought": false,
+          "added": "2026-11-07T10:00:00"
+        },
+        {
+          "id": "gr000002",
+          "name": "卵",
+          "need": 1,
+          "qty": 1,
+          "price": 300,
+          "bought": true,
+          "added": "2026-11-07T10:00:00"
+        }
+      ],
+      "staples": [
+        {
+          "id": "st000001",
+          "name": "牛乳",
+          "need": 2,
+          "price": 220
+        }
+      ],
+      "history": [
+        {
+          "name": "卵",
+          "date": "2026-11-07",
+          "price": 300,
+          "qty": 1
+        }
+      ],
+      "layout": {
+        "v": 2,
+        "columns": [
+          [
+            "chk",
+            "購入",
+            46
+          ],
+          [
+            "name",
+            "品名",
+            190
+          ],
+          [
+            "qty",
+            "個数",
+            46
+          ],
+          [
+            "price",
+            "価格",
+            80
+          ],
+          [
+            "sub",
+            "小計",
+            84
+          ],
+          [
+            "need",
+            "必要度",
+            70
+          ],
+          [
+            "wk",
+            "週",
+            38
+          ],
+          [
+            "mo",
+            "月",
+            38
+          ],
+          [
+            "yr",
+            "年",
+            42
+          ]
+        ]
+      }
+    },
+    "lecture_conf": {
+      "name": "（担当者名の例）",
+      "periods": [
+        [
+          "09:00",
+          "10:30"
+        ],
+        [
+          "10:45",
+          "12:15"
+        ],
+        [
+          "13:15",
+          "14:45"
+        ],
+        [
+          "15:00",
+          "16:30"
+        ],
+        [
+          "16:45",
+          "18:15"
+        ],
+        [
+          "18:30",
+          "20:00"
+        ],
+        [
+          "20:15",
+          "21:45"
+        ]
+      ],
+      "files": []
+    },
+    "shift_conf": {
+      "name": "（氏名の例）",
+      "normal": "H8",
+      "dir": "",
+      "strong": "N8,F8"
+    },
+    "filter": {
+      "undone": false,
+      "pri": []
+    },
+    "inbox_pos": [
+      900,
+      120
+    ],
+    "inbox_open": true,
+    "layouts": {
+      "office": "tree"
+    },
+    "show_lectures": true,
+    "show_shifts": true,
+    "lecture_alarms_v2": true,
+    "gcal_trash": []
+  }
+}

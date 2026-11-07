@@ -1,0 +1,5 @@
+// Mind_Navi 買い物リスト（Android）  VERSION 1.2（versionCode 3）  最終更新日 2026-11-08
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}
+// # END OF FILE
