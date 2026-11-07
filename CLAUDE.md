@@ -43,11 +43,12 @@
 ## Android版
 - ラムダ式・メソッド参照を使わない（Gradle なしのビルドで動かなくなる。匿名クラスで書く）。
 - ビルドは `android/MindNaviShopping/tools/build_apk.sh`（手順は `docs/SPEC.md` 11章）。
-- **署名の鍵とパスワードはリポジトリに入れない**。署名付き APK が必要なときは、鍵の受け渡し方を Dr. Ishida に確認する（方法は未確定）。
+- 署名の鍵とパスワードは `android/MindNaviShopping/signing/` にある（2026-11-08 に新しい鍵を作り、Dr. Ishida の決定でリポジトリに保管）。**この鍵を作り直したり消したりしない**（作り直すと、入っているアプリに上書きできなくなる）。
+- 配布：GitHub の「Actions」→「配布ファイルを作る」で、PC版 `mind_navi.py` と APK を Releases ページに置く（`docs/SPEC.md` 11.6）。
 
 ## 名称（旧称 TaskMap）
 - 2026-11-08 に TaskMap から Mind_Navi へ名前を変えた。新しく書くものはすべて Mind_Navi にする。
-- 旧名のまま残すもの（変えると既存データと食い違う）：Google カレンダーの照合キー `taskmap_id`、ICS の UID `@taskmap`、旧版からの取り込み元 `~/.taskmap_shopping.json` など4つ、起動時に旧設定を引き継ぐ処理（`migrate_old_local_files`・`_migrate_data_dir`）、署名の鍵の別名 `taskmap`、互換用の別名 `TaskMap = MindNavi`。詳細は `docs/SPEC.md` 冒頭。
+- 旧名のまま残すもの（変えると既存データと食い違う）：Google カレンダーの照合キー `taskmap_id`、ICS の UID `@taskmap`、旧版からの取り込み元 `~/.taskmap_shopping.json` など4つ、起動時に旧設定を引き継ぐ処理（`migrate_old_local_files`・`_migrate_data_dir`）、署名の鍵の別名 `taskmap`（新しい鍵でも同じ別名）、互換用の別名 `TaskMap = MindNavi`。詳細は `docs/SPEC.md` 冒頭。
 
 ## 既知の課題
 `docs/SPEC.md` の 9章（未確認事項・ヘルプとコードの食い違い）を参照。
