@@ -4,7 +4,7 @@
 
 ## 2026-11-08 配布ファイルを Releases ページからダウンロードできるように
 - GitHub Actions のワークフロー「配布ファイルを作る」（`.github/workflows/release.yml`）を追加。PC版 `mind_navi.py` と署名付き Android版 APK を Releases ページに置く。
-- 署名の鍵とパスワードは GitHub の Secrets（`MIND_NAVI_KEYSTORE_B64`・`MIND_NAVI_KS_PASS`）で渡す。手順は `docs/SPEC.md` 11.6。
+- Android版の署名の鍵を新しく作り、`android/MindNaviShopping/signing/` に保管（利用者の決定。移行時の「鍵をリポジトリに入れない」を変更）。元の鍵の版には上書きできないため、一度アンインストールして入れ直す。詳細は `docs/SPEC.md` 11.4・11.6。
 
 ## 2026-11-08 名称を Mind_Navi に変更（旧称 TaskMap）
 - PC版：`desktop/taskmap.py` → `desktop/mind_navi.py`。画面の表示名、データファイルの app 欄、PC ごとの設定ファイル（`~/.mind_navi_*`）、Google ドライブのデータフォルダ（`Mind_Navi`）を新しい名前に。

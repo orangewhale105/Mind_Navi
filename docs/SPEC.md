@@ -451,7 +451,7 @@ python mind_navi.py --export plan.json out/plan   # CSV + GraphML を一括出�
 - データ互換の買い物リストアプリを Android で作る。データは Google ドライブ上のファイルを見に行き、買い物リストだけ別ファイルにはしない。
 - 納品形態：Android Studio 用のソース（ビルドしていない）→ **インストールして使う APK**（利用者の希望）。Google のサーバーに接続できない環境のため、Ubuntu の apt で入る Android のビルド道具（aapt・dx・apksigner 等）で、Gradle を使わずに作る方法にした（11章）。
 - 必要度の入力：スピナー（表示されない不具合）→ **タップで一覧から選ぶ**（PC版と同じ）。
-- 配布：チャットでファイルを受け取る → **GitHub の Releases ページからダウンロード**（PC版 mind_navi.py と APK。2026-11-08、利用者の決定）。署名の鍵はリポジトリに入れず GitHub の Secrets に登録し、GitHub Actions で署名付き APK を作る（11.6）。Windows版は当面 mind_navi.py をそのまま配る（exe・インストーラーは未着手）。
+- 配布：チャットでファイルを受け取る → **GitHub の Releases ページからダウンロード**（PC版 mind_navi.py と APK。2026-11-08、利用者の決定）。署名の鍵は新しく作ってリポジトリに保管し、GitHub Actions で署名付き APK を作る（11.4・11.6）。Windows版は当面 mind_navi.py をそのまま配る（exe・インストーラーは未着手）。
 
 ---
 
@@ -550,7 +550,7 @@ python mind_navi.py --export plan.json out/plan   # CSV + GraphML を一括出�
 
 ### 11.1 プロジェクト
 - 場所：`android/MindNaviShopping/`（Java のみ、外部ライブラリなし）。パッケージ `jp.mindnavi.shopping`、minSdk 26（Android 8.0）、targetSdk 34、compileSdk 34（Gradle 用の設定）。
-- ファイル：`app/src/main/java/jp/mindnavi/shopping/MainActivity.java`（画面・読み書き）、`Json.java`（JSON を書き方を変えずに読み書き：キーの順番を保つ、数は読んだときの文字のまま）、`AndroidManifest.xml`、`res/values/strings.xml`、`res/mipmap-*/ic_launcher.png`（アイコン）、Gradle の設定（`settings.gradle`、`build.gradle`、`app/build.gradle`、`gradle.properties`、`gradlew`・`gradle/wrapper/`）、`tools/build_apk.sh`、`README.md`。署名の鍵はリポジトリ外（11.4）。
+- ファイル：`app/src/main/java/jp/mindnavi/shopping/MainActivity.java`（画面・読み書き）、`Json.java`（JSON を書き方を変えずに読み書き：キーの順番を保つ、数は読んだときの文字のまま）、`AndroidManifest.xml`、`res/values/strings.xml`、`res/mipmap-*/ic_launcher.png`（アイコン）、Gradle の設定（`settings.gradle`、`build.gradle`、`app/build.gradle`、`gradle.properties`、`gradlew`・`gradle/wrapper/`）、`tools/build_apk.sh`、`README.md`、署名の鍵 `signing/`（11.4）。
 - Google ドライブのファイルは Storage Access Framework（ACTION_OPEN_DOCUMENT と永続的な権限）で読み書きする。
 
 ### 11.2 APK の作り方（実際に使った方法：Gradle を使わない）
@@ -571,9 +571,11 @@ bash tools/build_apk.sh          # 出力：/tmp/mind_navi_apkbuild/MindNaviShop
 - この方法はネットワークの制限で一度も確認できていない。また署名の設定（signingConfig）が無いため、配布中の APK と署名が違うものになる。
 
 ### 11.4 署名
-- 鍵：`mind_navi.keystore`（別名 `taskmap`、RSA 2048、有効期間 20000日）。**鍵とパスワードはリポジトリに入れない**（2026-11-07 移行時に決定。利用者が Google ドライブ等に保管）。ビルド時は環境変数 `MIND_NAVI_KEYSTORE`・`MIND_NAVI_KS_PASS` で渡す。
-- 同じ鍵で署名した APK なら、設定（選んだファイル）を残したまま上書き更新できる。鍵を無くすと上書き更新できなくなる（アンインストールして入れ直しになる）。
-- 署名付き APK は、鍵とパスワードを GitHub の Secrets に登録し、GitHub Actions で作る（2026-11-08 決定。11.6）。
+- 鍵：`android/MindNaviShopping/signing/mind_navi.keystore`（PKCS12、別名 `taskmap`、RSA 2048、有効期間 20000日）。パスワードは同じフォルダの `password.txt`。
+- 経緯：2026-11-07 の移行時は「鍵とパスワードはリポジトリに入れない（利用者が保管）」と決めた。2026-11-08、利用者が元の鍵を GitHub に登録する手順が難しいため、**新しい鍵を作ってリポジトリ（非公開）に保管**することにした（利用者の決定）。
+- 影響：元の鍵で署名した版（1.0〜1.2）には上書きできない。新しい鍵の版を入れるときは、一度アンインストールして入れ直し、データファイルを選び直す（買い物データは Google ドライブのデータファイルにあるので消えない）。以後は同じ鍵で上書き更新できる。
+- 注意：リポジトリに入れる人は鍵を使えるので、共同作業者を加えるときは注意する。**鍵を作り直したり消したりしない**（上書き更新できなくなる）。
+- 手元でビルドするときは 11.2 の環境変数に `signing/` の鍵とパスワードを渡す。
 
 ### 11.5 インストール
 - APK をスマホで開き、「提供元不明のアプリ」を許可してインストール。Play プロテクトの警告が出たら「インストールする」。
@@ -583,10 +585,7 @@ bash tools/build_apk.sh          # 出力：/tmp/mind_navi_apkbuild/MindNaviShop
 - 置くファイル：`mind_navi.py`（PC版。Windows・Mac 共通）と `MindNaviShopping_v<versionName>.apk`（Android版）。
 - 版の名前（タグ）は `pc<PC版のVERSION>-android<versionName>`（例 `pc3.6-android1.2`）。同じ版でもう一度作ると、ファイルを差し替える。いつもいちばん新しく作ったものを「Latest」にする。
 - ダウンロード：リポジトリのページ右側の「Releases」→ 版を開き「Assets」のファイルを押す。
-- 事前に Secrets を2つ登録する（リポジトリの Settings → Secrets and variables → Actions → New repository secret）。
-  - `MIND_NAVI_KEYSTORE_B64`：鍵ファイルを文字にしたもの。Windows では鍵のあるフォルダで PowerShell を開き、次を実行するとクリップボードに入るので貼り付ける。
-    `[Convert]::ToBase64String([IO.File]::ReadAllBytes("mind_navi.keystore")) | Set-Clipboard`
-  - `MIND_NAVI_KS_PASS`：鍵のパスワード。
+- 署名は `signing/` の鍵を使う（11.4）。事前の登録は要らない。
 - 「Run workflow」のボタンは、ワークフローのファイルが main ブランチにあるときだけ表示される。
 
 ---
@@ -617,7 +616,7 @@ bash tools/build_apk.sh          # 出力：/tmp/mind_navi_apkbuild/MindNaviShop
 
 ## 付録 A：新しい環境での最初の作業の提案（未確定。決めるのは利用者）
 - リポジトリの構成例：`desktop/mind_navi.py`（PC版）、`android/MindNaviShopping/`（Android版）、`docs/SPEC.md`（この文書）、`samples/mind_navi_sample.json`（ダミーデータ）。
-- 署名の鍵（`signing/mind_navi.keystore`）をリポジトリに入れるかどうかを決める。
+- 署名の鍵（`signing/mind_navi.keystore`）をリポジトリに入れるかどうかを決める。→ 2026-11-08 に新しい鍵を作ってリポジトリに入れた（11.4）。
 - 9.2 の食い違い（ヘルプの文章）を直すかどうか。
 
 ## 付録 B：同梱ファイル
