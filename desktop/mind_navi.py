@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.7  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.8  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.7。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.8。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -62,7 +62,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "4.7"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "4.8"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2621,20 +2621,23 @@ def _merge_key(x):
     return ("v", json.dumps(x, sort_keys=True, ensure_ascii=False, default=str))
 
 
-def merge3(base, ours, theirs):
-    """3方向のまとめ（4.4）：前回読んだ・保存した中身 base、この PC の今の中身 ours、ファイルの今の中身 theirs（ほかの PC・
+def merge3(base, ours, theirs, tomb=None, trust_theirs=False):
+    """3方向のまとめ：前回読んだ・保存した中身 base、この PC の今の中身 ours、ファイルの今の中身 theirs（ほかの PC・
     スマホが書いたもの）を、どちらの変更も消さずにまとめる。
     ・片方だけが変えた所は、その変更を使う。両方が同じ所を違う値に変えたときは、この PC（ours）を使う。
     ・辞書は項目ごと、id のある品・ノードのリストは品ごとにまとめる（どちらかで足した品はどちらも残る）。
-    ・消したもの：片方が消して、もう片方が変えていなければ消す（その PC での削除の意図を守る）。
-      もう片方が変えていたら残す（入力を消さない）"""
+    ・【4.8】ほかの側（theirs）に無いことは「消した」とみなさない（足した方が勝つ）。同期の遅れや古い版の PC が
+      古い中身で保存しても、この PC にある振り返り・コンパス・実施の記録・ノードを消さないため。
+      消したとみなすのは、この PC で消したとき（ours に無い）、ゴミ箱に入れた記録がある id（tomb）、
+      trust_theirs=True（スマホが書く買い物リスト・つながり）のときだけ"""
     import copy as _copy
     if ours == theirs:
         return _copy.deepcopy(ours)
-    if ours == base:
-        return _copy.deepcopy(theirs)
     if theirs == base:
         return _copy.deepcopy(ours)
+    both = (isinstance(ours, dict) and isinstance(theirs, dict)) or (isinstance(ours, list) and isinstance(theirs, list))
+    if ours == base and (trust_theirs or not both):
+        return _copy.deepcopy(theirs)
     if isinstance(ours, dict) and isinstance(theirs, dict):
         bd = base if isinstance(base, dict) else {}
         out = {}
@@ -2645,11 +2648,11 @@ def merge3(base, ours, theirs):
                     continue   # この PC で消した（ほかでは変えていない）
                 out[k] = _copy.deepcopy(tv)
             elif tv is _MISSING:
-                if bv is not _MISSING and ov == bv:
-                    continue   # ほかの PC で消した（この PC では変えていない）
+                if trust_theirs and bv is not _MISSING and ov == bv:
+                    continue   # ほかで消した（信じてよい所だけ）
                 out[k] = _copy.deepcopy(ov)
             else:
-                out[k] = merge3(None if bv is _MISSING else bv, ov, tv)
+                out[k] = merge3(None if bv is _MISSING else bv, ov, tv, tomb, trust_theirs)
         return out
     if isinstance(ours, list) and isinstance(theirs, list):
         bm = {_merge_key(x): x for x in (base if isinstance(base, list) else [])}
@@ -2662,10 +2665,10 @@ def merge3(base, ours, theirs):
                 continue
             seen.add(k)
             if k in om and k in tm:
-                out.append(merge3(bm.get(k), om[k], tm[k]) if k[0] == "id" else _copy.deepcopy(om[k]))
+                out.append(merge3(bm.get(k), om[k], tm[k], tomb, trust_theirs) if k[0] == "id" else _copy.deepcopy(om[k]))
             elif k in om:
-                if k in bm and om[k] == bm[k]:
-                    continue   # ほかの PC で消した
+                if k in bm and om[k] == bm[k] and (trust_theirs or (tomb and k[0] == "id" and k[1] in tomb)):
+                    continue   # ほかで消した（ゴミ箱に入れた記録がある・信じてよい所）
                 out.append(_copy.deepcopy(om[k]))
             else:
                 if k in bm and tm[k] == bm[k]:
@@ -2673,6 +2676,107 @@ def merge3(base, ours, theirs):
                 out.append(_copy.deepcopy(tm[k]))
         return out
     return _copy.deepcopy(ours)   # 両方が同じ所を違う値に変えた → この PC の値
+
+
+def trash_tombstones(doc):
+    """ゴミ箱に入れた（＝わざと消した）ノード・品の id"""
+    out = set()
+    for e in ((doc or {}).get("view") or {}).get("trash") or []:
+        d = e.get("data") if isinstance(e, dict) else None
+        if not isinstance(d, dict):
+            continue
+        if e.get("kind") == "node":
+            out |= {str(n.get("id")) for n in d.get("nodes") or [] if isinstance(n, dict) and n.get("id")}
+        elif isinstance(d.get("item"), dict) and d["item"].get("id"):
+            out.add(str(d["item"]["id"]))
+    return out
+
+
+def merge_doc(base, ours, theirs):
+    """データファイル全体のまとめ（4.8）：基本は「足した方が勝つ」（merge3）。
+    ・買い物リスト（スマホで消す。スマホはゴミ箱を持たない）とつながり（親の付けかえ）は、ほかで消したことも信じる。
+    ・残ったノードの親のつながりが無くなったら、この PC（無ければファイル）のつながりで戻す"""
+    import copy as _copy
+    base, ours, theirs = base or {}, ours or {}, theirs or {}
+    tomb = trash_tombstones(ours) | trash_tombstones(theirs)
+    out = merge3(base, ours, theirs, tomb=tomb)
+    if not isinstance(out, dict):
+        return out
+    gv = [((d.get("view") or {}).get("groceries", _MISSING)) for d in (base, ours, theirs)]
+    if gv[1] is not _MISSING or gv[2] is not _MISSING:
+        b_, o_, t_ = [None if g is _MISSING else g for g in gv]
+        g_ = merge3(b_, o_ if o_ is not None else t_, t_ if t_ is not None else o_, trust_theirs=True)
+        out.setdefault("view", {})["groceries"] = g_
+    out["edges"] = merge3(base.get("edges") or [], ours.get("edges") or [], theirs.get("edges") or [], trust_theirs=True)
+    ids = {str(n.get("id")) for n in out.get("nodes") or [] if isinstance(n, dict)}
+    has_parent = {str(e.get("target")) for e in out["edges"] if e.get("relation", REL_CHILD) == REL_CHILD}
+    for src in (ours.get("edges") or [], theirs.get("edges") or []):
+        for e in src:
+            t_, s_ = str(e.get("target")), str(e.get("source"))
+            if e.get("relation", REL_CHILD) == REL_CHILD and t_ in ids and s_ in ids and t_ not in has_parent:
+                out["edges"].append(_copy.deepcopy(e))
+                has_parent.add(t_)
+    return out
+
+
+def strip_ids(obj, ids):
+    """ids（ゴミ箱に入れた＝わざと消した id）の品・ノードを取りのぞいたコピー"""
+    if isinstance(obj, dict):
+        return {k: strip_ids(v, ids) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [strip_ids(x, ids) for x in obj
+                if not (isinstance(x, dict) and x.get("id") is not None and str(x.get("id")) in ids)]
+    return obj
+
+
+FILL_SKIP_VIEW = ("mn_guard", "style", "views", "positions", "trash", "inbox_pos", "inbox_open", "filter", "layouts")
+
+
+def fill_doc(cur, old, tomb=None):
+    """足すだけの復元（4.8。データファイル全体の辞書どうし）：old にあって cur で消えている・空になっているものだけを
+    cur に足す（ノード・つながり・振り返り・コンパス・デイリーコンパス・実施の記録・IN/OUT_Navi・買い物リストなど）。
+    今の入力は変えない。ゴミ箱に入れた（わざと消した）id は戻さない。足した数を返す"""
+    import copy as _copy
+    tomb = set(tomb or ()) | trash_tombstones(cur)
+    old = strip_ids(old or {}, tomb)
+    n = 0
+    nodes = cur.setdefault("nodes", [])
+    by = {str(x.get("id")): x for x in nodes if isinstance(x, dict)}
+    for nd in old.get("nodes") or []:
+        if not isinstance(nd, dict) or nd.get("id") is None:
+            continue
+        c = by.get(str(nd["id"]))
+        if c is None:
+            nodes.append(_copy.deepcopy(nd))
+            by[str(nd["id"])] = nodes[-1]
+            n += 1
+        else:
+            n += fill_missing(c, nd)
+    edges = cur.setdefault("edges", [])
+    have = {(str(e.get("source")), str(e.get("target")), e.get("relation")) for e in edges}
+    parented = {str(e.get("target")) for e in edges if e.get("relation", REL_CHILD) == REL_CHILD}
+    for e in old.get("edges") or []:
+        k = (str(e.get("source")), str(e.get("target")), e.get("relation"))
+        if k in have or k[0] not in by or k[1] not in by:
+            continue
+        if e.get("relation", REL_CHILD) == REL_CHILD and k[1] in parented:
+            continue   # 今の親（付けかえた後の親）を変えない
+        edges.append(dict(e))
+        have.add(k)
+        if e.get("relation", REL_CHILD) == REL_CHILD:
+            parented.add(k[1])
+        n += 1
+    cv = cur.setdefault("view", {})
+    for k, val in (old.get("view") or {}).items():
+        if k in FILL_SKIP_VIEW:
+            continue
+        if k not in cv or cv[k] in (None, "", [], {}):
+            if val not in (None, "", [], {}):
+                cv[k] = _copy.deepcopy(val)
+                n += 1
+        elif isinstance(val, (dict, list)) and type(cv[k]) is type(val):
+            n += fill_missing(cv[k], val)
+    return n
 
 
 def fill_missing(cur, old):
@@ -3879,7 +3983,7 @@ def run_gui(path=None):
                 return False   # 書きかけ（同期の途中）：次の確認で
             base = (getattr(self, "_base_doc", None) or {}).get(ap) or {}
             ours = self.mm.to_dict()
-            merged = merge3(base, ours, theirs)
+            merged = merge_doc(base, ours, theirs)
             self._apply_doc(self.mm, merged)
             self._base_doc[ap] = theirs
             self._file_sha[ap] = sha
@@ -3989,7 +4093,7 @@ def run_gui(path=None):
             except ValueError:
                 return d_   # 書きかけなどで読めない：この PC の中身で保存（前の中身は復元ポイントに残る）
             base = (getattr(self, "_base_doc", None) or {}).get(ap) or {}
-            merged = merge3(base, d_, theirs)
+            merged = merge_doc(base, d_, theirs)
             self._apply_doc(mm, merged)
             if mm is self.mm:
                 self.root.after_idle(self._after_merge_ui)
@@ -4002,9 +4106,10 @@ def run_gui(path=None):
             new = MindNavi.from_dict(d)
             for k, v in list(new.view.items()):
                 old = mm.view.get(k)
-                if isinstance(v, dict) and isinstance(old, dict):
+                if isinstance(v, dict) and isinstance(old, dict) and old is not v:
+                    tmp = dict(v)   # 同じ入れ物どうしのときに中身を消さないよう、先に写す（4.8）
                     old.clear()
-                    old.update(v)
+                    old.update(tmp)
                     new.view[k] = old
             mm.nodes, mm.edges, mm.view = new.nodes, new.edges, new.view
             mm._edge_cache = None
@@ -4450,6 +4555,8 @@ def run_gui(path=None):
             #（以前の「全部をこの時点に戻す」などの上書きは、その後の入力を消すので廃止）
             for txt, mode in (("この時点から、消えたものを戻す", "fill_all"), ("IN/OUT_Navi の消えた入力を補う", "fill")):
                 ttk.Button(bf, text=txt, command=lambda m=mode: do(m)).pack(side="right", padx=3)
+            ttk.Button(bf, text="すべてのバックアップから集めて戻す",   # 4.8：どの時点か分からなくても戻せる
+                       command=lambda: (w.destroy(), self.recover_all(ask=True))).pack(side="left", padx=3)
             if rows:
                 first = next(iter(rows))
                 if focus:   # その数（IN/OUT_Navi の入力など）がいちばん多い時点を選んでおく
@@ -4508,6 +4615,78 @@ def run_gui(path=None):
             ttk.Button(bf, text="閉じる", command=w.destroy).pack(side="right")
             ttk.Button(bf, text="戻す", command=do).pack(side="right", padx=6)
             tv.bind("<Double-Button-1>", lambda ev: do())
+
+        def recover_all(self, ask=True, parent=None):
+            """【4.8】すべてのバックアップ（この PC とデータフォルダの復元ポイント・自動保存の版・同じフォルダの
+            .backup）から、今は消えている・空になっているものを集めて足す。新しいバックアップから順に見る。
+            今の入力は変えない。ゴミ箱に入れた（わざと消した）ものは戻さない"""
+            if not self.path:
+                messagebox.showinfo(APP_NAME, "保存先のあるマップで使えます", parent=parent or self.root)
+                return None
+            if ask and not messagebox.askyesno(
+                    APP_NAME, "すべてのバックアップを調べて、今は消えている振り返り・ウィークリーコンパス・デイリーコンパス・"
+                              "実施の記録・タスク・IN/OUT_Navi・買い物リストなどを集めて戻します。\n\n"
+                              "今の入力は変えません（足すだけ）。ゴミ箱に入れて消したものは戻しません。\n戻しますか？",
+                    parent=parent or self.root):
+                return None
+            self.on_transition("復元の前", defer=False)
+            BG_WRITER.flush()
+            files = [fp for _t, _k, fp, _p, _v in rp_list(self.path)] + [bp for _t, bp in self._backup_candidates(self.path)]
+            seen, uniq = set(), []
+            for fp in files:
+                if fp not in seen and os.path.exists(fp):
+                    seen.add(fp)
+                    uniq.append(fp)
+            uniq.sort(key=lambda fp: os.path.getmtime(fp), reverse=True)
+            try:
+                with open(self.path, "rb") as f:   # 戻す前の中身も残す
+                    rp_write(self.path, "restore", f.read())
+            except OSError:
+                pass
+            self._close_data_windows()
+            self.checkpoint()
+            cur = json.loads(json.dumps(self.mm.to_dict(), ensure_ascii=False, default=str))   # 今の中身の写し
+            n = used = 0
+            for i, fp in enumerate(uniq):
+                if i % 10 == 0:
+                    self.set_status(f"バックアップを調べています… {i}/{len(uniq)}")
+                    try:
+                        self.root.update_idletasks()
+                    except tk.TclError:
+                        pass
+                try:
+                    old = read_data_file(fp)
+                except (OSError, ValueError, EOFError):
+                    continue
+                if not isinstance(old, dict) or "nodes" not in old:
+                    continue
+                k = fill_doc(cur, old)
+                ov = (old.get("view") or {}).get("shopping")
+                if isinstance(ov, dict):
+                    k += shopping_fill_lost(shopping_upgrade(cur.setdefault("view", {}).setdefault("shopping", {})), ov)
+                n += k
+                used += 1 if k else 0
+            if n:
+                self._apply_doc(self.mm, cur)
+                self.dirty = True
+                self.touch()
+                self.redraw()
+                self.on_transition("復元", defer=False)
+            msg = (f"{len(uniq)} 個のバックアップを調べ、消えていたもの {n} か所を戻しました（{used} 個のバックアップから。"
+                   "今の入力は変えていません）" if n else f"{len(uniq)} 個のバックアップを調べましたが、戻すもの（今は消えているもの）はありませんでした")
+            self.set_status(msg)
+            messagebox.showinfo(APP_NAME, msg + "\n\nここに無いものは、Google ドライブの「版を管理」で古い版をダウンロードし、"
+                                                 "［復元ポイントから戻す…］の［ファイルを選ぶ…］で戻せます",
+                                parent=parent or self.root)
+            return msg
+
+        def _offer_recover_once(self):
+            """【4.8】このファイルを 4.8 で初めて開いたとき：消えたデータをバックアップから集めて戻すか聞く（1回だけ）"""
+            if not self.path or self.mm.view.get("mn_recover_v") == "4.8":
+                return
+            self.mm.view["mn_recover_v"] = "4.8"
+            self.dirty = True
+            self.recover_all(ask=True)
 
         def _apply_restore(self, d, mode, parent=None):
             """復元ポイントの中身 d から戻す（4.4：足すだけ）。
@@ -4923,6 +5102,7 @@ def run_gui(path=None):
             f.add_cascade(label="取り込んだデータの削除", menu=dl)
             f.add_separator()
             f.add_command(label="ゴミ箱（消した・外したものを戻す）…", command=self.trash_dialog)
+            f.add_command(label="すべてのバックアップから、消えたものを集めて戻す…", command=self.recover_all)
             f.add_command(label="復元ポイント（バックアップ）から戻す…", command=self.restore_dialog)
             f.add_command(label="自動バックアップのフォルダを開く", command=self.open_backup_folder)
             f.add_separator()
@@ -17200,6 +17380,7 @@ def run_gui(path=None):
 
         def _after_load(self):
             self.root.after(800, self._check_guard_on_open)   # 前回より大きく減っていないか（古い版などでの上書き）
+            self.root.after(1500, self._offer_recover_once)   # 4.8：消えたデータをバックアップから集めて戻す（1回だけ聞く）
             if not self.mm.view.get("idx_rank_v1"):   # 指標を「順位（1が最も高い）」に：以前の入力（6が高い）を読みかえる
                 ch_ = False
                 for n_ in self.mm.nodes.values():
