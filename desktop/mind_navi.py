@@ -19474,6 +19474,12 @@ def run_gui(path=None):
                 return d0, (d0 + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1)
             return datetime.date(d.year, 1, 1), datetime.date(d.year, 12, 31)
 
+            # 週の振り返り：その週の毎日の振り返りを1つの欄にまとめて表示（読むだけ。書くのは日の振り返りで）
+            self.days_hd = ttk.Label(nf, text="この週の毎日の振り返り", font=(app.fam_base, 10, "bold"))
+            self.days_box = tk.Text(nf, wrap="word", font=(app.fam_base, 10), relief="solid", bd=1, padx=8, pady=6,
+                                    height=12, bg="#f8f9fa", state="disabled")
+            self.days_box.tag_configure("day", font=(app.fam_base, 10, "bold"), foreground="#1864ab", spacing1=4)
+            self.days_box.tag_configure("none", foreground="#adb5bd")
         def key(self):
             d0, _d1 = self.span()
             p = self.v_period.get()
@@ -19550,33 +19556,50 @@ def run_gui(path=None):
             notes = self.notes()
             if txt == notes.get(self._key, ""):
                 return
+            self._fill_days_box()
             if txt:
                 notes[self._key] = txt
             else:
                 notes.pop(self._key, None)
             self.app.dirty = True
+        def _fill_days_box(self):
+            """週を見ているときだけ、その週の7日分の振り返りを1つの欄に（日付ごとの見出しつき）"""
+            box = self.days_box
+            if self.v_period.get() != "week":
+                self.days_hd.pack_forget()
+                box.pack_forget()
+                return
+            if not box.winfo_ismapped():
+                self.days_hd.pack(anchor="w", pady=(6, 2), before=self.note)
+                box.pack(fill="both", expand=True, before=self.note)
+            d0, _d1 = self.span()
+            notes = self.notes()
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            for i in range(7):
+                d = d0 + datetime.timedelta(days=i)
+                box.insert("end", f"{d.month}/{d.day}（{'月火水木金土日'[d.weekday()]}）\n", ("day",))
+                txt = notes.get(f"D:{d}", "").strip()
+                box.insert("end", (txt or "（書いていません）") + "\n", () if txt else ("none",))
+            box.configure(state="disabled")
+
             self.app.schedule_autosave()
             self.app.update_title()
             self.v_saved.set(f"保存しました（{datetime.datetime.now():%H:%M}）。マップを保存するとファイルに書き込まれます")
 
         def template(self):
             p = dict(self.PERIODS)[self.v_period.get()]
-            # 経験学習サイクル（Kolb：経験→省察→概念化→試行）とメタ認知（計画・モニタリング・評価）に沿って、
-            # 事実（数字）→ 要因 → 学び → 次の具体的な行動（if-then）の順に書く
+            # シンプルに4行だけ（数字 → よかった → 直したい → 次にやる）。各行の「：」の後にそのまま書ける
             try:
                 R = self.collect(*self.span())
                 fact = (f"実施 {R['done_n']}/{R['set_n']} 件（{self.pct(R['done_n'], R['set_n'])}）・"
-                        f"実施時間 {self.hm(R['done_min'])}/{self.hm(R['set_min'])}・延期 {R['post']} 回")
+                        f"{self.hm(R['done_min'])}/{self.hm(R['set_min'])}・延期 {R['post']} 回")
             except Exception:
-                fact = "実施件数・時間・延期の回数（上のグラフ）"
-            t = (f"■ 1. 事実：計画と結果（数字で）\n　{fact}\n　目標に対して：\n\n"
-                 f"■ 2. うまくいったこと（Keep）と、その理由（次も再現できる要因）\n　\n\n"
-                 f"■ 3. うまくいかなかったこと（Problem）と、その原因\n"
-                 f"　（やり方？ 量・時間の見積もり？ 環境・体調？ のどれか）\n　\n\n"
-                 f"■ 4. 学び・気づき（ほかの場面でも使える自分の法則）\n　\n\n"
-                 f"■ 5. 次の{p}に試すこと（Try）：1〜3つ、具体的に\n"
-                 f"　もし［いつ・どこで・きっかけ］なら、［何を・どれだけ］する\n　\n\n"
-                 f"■ 6. 自己評価（1〜5）　集中：　計画の精度：　満足度：\n")
+                fact = ""
+            t = (f"■ 結果：{fact}\n"
+                 f"■ よかった：\n"
+                 f"■ 直したい：\n"
+                 f"■ 次の{p}にやる：\n")
             self.note.insert("insert" if self.note.get("1.0", "end-1c").strip() else "1.0", t)
             self.note.focus_set()
 
