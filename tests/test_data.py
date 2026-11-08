@@ -266,11 +266,95 @@ class DataFileTest(unittest.TestCase):
         m = app.merge3(base, ours, theirs)
         self.assertEqual(m["items"], [{"id": "x", "v": 2}])   # y はこの PC で消した。x はほかの変更を使う
         self.assertEqual(m["s"], "b")                          # 両方が変えた → この PC
-        self.assertEqual(m["tags"], ["q", "r"])
+        self.assertEqual(m["tags"], ["p", "q", "r"])   # 4.8：ほかの側に無いことは消したとみなさない（足した方が勝つ）
         changed = {"items": [{"id": "x", "v": 1}, {"id": "y", "v": 5}]}   # 消した品をほかで変えていた → 残す
         self.assertEqual(app.merge3(base, {"items": [{"id": "x", "v": 1}]}, changed)["items"],
                          [{"id": "x", "v": 1}, {"id": "y", "v": 5}])
         self.assertEqual(app.merge3(base, base, base), base)
+
+    def test_stale_file_never_deletes(self):
+        """（4.8）同期の遅れ・古い版の PC が古い中身でファイルを書いても、この PC にあるコンパス・デイリーコンパス・
+        振り返り・実施の記録・ノード・IN/OUT_Navi の品を消さない（以前は「ほかで消した」とみなして全 PC から消えた）"""
+        base = {"nodes": [{"id": "t", "label": "毎日", "repeat": {"freq": "daily"}, "done_dates": ["2026-11-07", "2026-11-08"]},
+                          {"id": "n", "label": "新しいタスク"}, {"id": "g", "label": "目標"}],
+                "edges": [{"source": "g", "target": "n", "relation": app.REL_CHILD}],
+                "view": {"compass": {"2026-11-02": {"goal": "週の目標"}}, "day_compass": {"2026-11-08": "方向"},
+                         "reviews": {"D:2026-11-08": {"text": "振り返り"}},
+                         "shopping": {"items": [{"id": "s1", "name": "本"}]}}}
+        stale = {"nodes": [{"id": "t", "label": "毎日", "repeat": {"freq": "daily"}, "done_dates": ["2026-11-07"]},
+                           {"id": "g", "label": "目標"}],
+                 "edges": [], "view": {"compass": {}, "shopping": {"items": []}}}
+        ours = json.loads(json.dumps(base))
+        for o in (ours, base):   # この PC が何も変えていないときも、変えたときも
+            m = app.merge_doc(base, o, stale)
+            v = m["view"]
+            self.assertEqual(v["compass"], base["view"]["compass"])
+            self.assertEqual(v["day_compass"], base["view"]["day_compass"])
+            self.assertEqual(v["reviews"], base["view"]["reviews"])
+            self.assertEqual(v["shopping"]["items"], [{"id": "s1", "name": "本"}])
+            t = next(n for n in m["nodes"] if n["id"] == "t")
+            self.assertEqual(t["done_dates"], ["2026-11-07", "2026-11-08"])
+            self.assertTrue(any(n["id"] == "n" for n in m["nodes"]))
+            self.assertTrue(any(e["target"] == "n" for e in m["edges"]))   # 親のつながりも残る
+        # この PC で消したもの・ほかの PC でゴミ箱に入れたもの・スマホで消した買い物リストの品は消える
+        mine = json.loads(json.dumps(base))
+        mine["view"]["reviews"] = {}
+        mine["nodes"][0]["done_dates"] = ["2026-11-07"]
+        theirs = json.loads(json.dumps(base))
+        theirs["nodes"] = [x for x in theirs["nodes"] if x["id"] != "n"]
+        theirs["view"]["trash"] = [{"id": "z", "kind": "node", "data": {"nodes": [{"id": "n"}]}}]
+        g = {"items": [{"id": "g1"}, {"id": "g2"}]}
+        base["view"]["groceries"], mine["view"]["groceries"] = g, json.loads(json.dumps(g))
+        theirs["view"]["groceries"] = {"items": [{"id": "g1"}]}
+        m = app.merge_doc(base, mine, theirs)
+        self.assertEqual(m["view"]["reviews"], {})
+        self.assertEqual(next(n for n in m["nodes"] if n["id"] == "t")["done_dates"], ["2026-11-07"])
+        self.assertFalse(any(n["id"] == "n" for n in m["nodes"]))
+        self.assertEqual(m["view"]["groceries"]["items"], [{"id": "g1"}])
+        # 親の付けかえ（ほかの PC）は1つの親になる
+        b2 = {"nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}], "edges": [{"source": "a", "target": "c", "relation": app.REL_CHILD}]}
+        t2 = {"nodes": b2["nodes"], "edges": [{"source": "b", "target": "c", "relation": app.REL_CHILD}]}
+        self.assertEqual(app.merge_doc(b2, json.loads(json.dumps(b2)), t2)["edges"],
+                         [{"source": "b", "target": "c", "relation": app.REL_CHILD}])
+
+    def test_fill_doc_recovers_everything(self):
+        """（4.8）すべてのバックアップから集めて戻す：消えたコンパス・デイリーコンパス・振り返り・実施の記録・ノードを足す。
+        今の入力は変えない。ゴミ箱に入れたものは戻さない。2回やっても同じ"""
+        old = {"nodes": [{"id": "t", "label": "毎日", "done_dates": ["2026-11-01", "2026-11-02"]}, {"id": "x", "label": "消したノード"},
+                         {"id": "y", "label": "消えたノード"}],
+               "edges": [{"source": "t", "target": "y", "relation": app.REL_CHILD}],
+               "view": {"compass": {"w1": "目標"}, "day_compass": {"d1": "方向"}, "reviews": {"D:1": {"text": "昔"}}, "mn_guard": {"ver": "1"}}}
+        cur = {"nodes": [{"id": "t", "label": "今の名前", "done_dates": ["2026-11-03"]}], "edges": [],
+               "view": {"reviews": {"D:1": {"text": "今"}}, "trash": [{"id": "z", "kind": "node", "data": {"nodes": [{"id": "x"}]}}]}}
+        n = app.fill_doc(cur, old)
+        self.assertGreater(n, 0)
+        ids = {x["id"] for x in cur["nodes"]}
+        self.assertEqual(ids, {"t", "y"})   # ゴミ箱に入れた x は戻さない
+        t = next(x for x in cur["nodes"] if x["id"] == "t")
+        self.assertEqual(t["label"], "今の名前")
+        self.assertEqual(sorted(t["done_dates"]), ["2026-11-01", "2026-11-02", "2026-11-03"])
+        self.assertEqual(cur["view"]["compass"], {"w1": "目標"})
+        self.assertEqual(cur["view"]["day_compass"], {"d1": "方向"})
+        self.assertEqual(cur["view"]["reviews"]["D:1"]["text"], "今")
+        self.assertNotIn("mn_guard", cur["view"])
+        self.assertEqual(len(cur["edges"]), 1)
+        import copy
+        snap = copy.deepcopy(cur)
+        self.assertEqual(app.fill_doc(cur, old), 0)
+        self.assertEqual(cur, snap)
+
+    def test_completion_records_never_dropped(self):
+        """（4.9）タスクの種類・繰り返しを変えても、実施の記録（done_dates・day_counts）を消さない。
+        消してよいのは、確認してゴミ箱に入れる「タスクの設定を外す」（untask）だけ"""
+        import re
+        with open(APP, encoding="utf-8") as f:
+            src = f.read()
+        self.assertEqual(re.findall(r'\.pop\("(?:done_dates|day_counts)"', src), [])
+        bad = []
+        for m in re.finditer(r'for k in \(([^)]*)\):\s*\n\s*(\w+)\.pop\(k', src):
+            if ("done_dates" in m.group(1) or "day_counts" in m.group(1)) and "trial" not in m.group(1):
+                bad.append(m.group(1))
+        self.assertEqual([b for b in bad if "alarms" not in b], [])   # alarms＝カレンダーに描くための仮の写し
 
     def test_fill_missing_only_adds(self):
         """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
