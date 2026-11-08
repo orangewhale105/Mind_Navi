@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.5  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.7  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.5。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.7。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -62,7 +62,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "4.5"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "4.7"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -378,10 +378,9 @@ class MindNavi:
         return False
 
     def pruned_kids(self, nid):
-        """「未完了のツリーだけ」で隠している子（未完了タスクを含まない枝）"""
-        if not self.nodes[nid].get("hide_done_kids"):
-            return []
-        return [c for c in self.children(nid) if not self.has_undone(c)]
+        """「未完了のツリーだけ」で隠している子（未完了タスクを含まない枝）。
+        【4.6】完了したタスクはどの設定でもマップから隠さない（利用者の指示）。以前の版の印（hide_done_kids）は見ない"""
+        return []
 
     def user_hidden(self):
         """「非表示」に設定したノードとその下位"""
@@ -751,6 +750,8 @@ class MindNavi:
             for f in FLOAT_FIELDS:
                 n[f] = _to_float(n.get(f))
             n["kind"] = LEGACY_KINDS.get(n.get("kind"), n.get("kind") or "task")
+            if isinstance(n.get("label"), str) and "アドホック" in n["label"]:   # 用語の統一（4.6）：アドホック → Adhoc
+                n["label"] = n["label"].replace("アドホック", "Adhoc")
             mm.nodes[str(n["id"])] = n
         for e in d.get("edges", []):
             e = dict(e)
@@ -2095,6 +2096,46 @@ GOOGLE_TOKEN = os.path.join(os.path.expanduser("~"), ".mind_navi_google_token.js
 CATEGORY_SETTINGS = os.path.join(os.path.expanduser("~"), ".mind_navi_categories.json")
 NEW_TASK_MIN = 30   # 新しく置くタスクの実施時間（分）の既定
 SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries", "remind_state")   # 別画面のデータ
+# 元に戻す（Ctrl+Z）で前に戻さない記入：別画面のデータ・コンパス・デイリーコンパス・ゴミ箱など（4.6）
+SELL_RING = "#2b8a3e"   # IN/OUT_Navi マップ：売却金額の輪
+TRIAL_RED = "#e03131"   # トライアルの実施の印（濃さ＝回数）
+CROWN_COLORS = (("#ffe066", "#f08c00"), ("#fcc419", "#e67700"), ("#ff922b", "#d9480f"))   # 王冠の数 1・2・3〜
+
+
+class ListHistory:
+    """リストの「元に戻す」（Ctrl+Z）：保存するたびに前の中身を覚え、UNDO_MAX 回まで戻せる（4.6）。
+    戻すときは同じ辞書の中身を入れかえる（画面が持っている参照をそのまま使える）"""
+
+    def __init__(self, data):
+        self.last = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        self.hist = []
+
+    def note(self, data):
+        cur = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        if cur != self.last:
+            self.hist.append(self.last)
+            del self.hist[:-UNDO_MAX]
+            self.last = cur
+
+    def undo(self, data):
+        """1つ前に戻す。戻せたら True"""
+        if not self.hist:
+            return False
+        prev = self.hist.pop()
+        data.clear()
+        data.update(json.loads(prev))
+        self.last = prev
+        return True
+
+
+def trial_red(k):
+    """トライアルの丸の色：実施した回数が多いほど濃い赤（1回はうすい赤）"""
+    return mix(TRIAL_RED, {1: 0.7, 2: 0.45, 3: 0.2}.get(k, 0.0))
+
+
+LANE_ORDER = ("fold", "shrink", "expand", "all")   # デイリー欄の表示件数（4.6：緊急のみ・5件・10件・全て）
+LANE_LABELS = {"fold": "⚠ 緊急のみ", "shrink": "≡ 5件", "expand": "≡ 10件", "all": "≡ 全て"}
+UNDO_KEEP_VIEW = SHARED_VIEW_KEYS + ("compass", "day_compass", "trash", "gcal_trash", "mn_guard")
 SHOP_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_shopping.json")   # 購入分析（旧版の保存先・取り込み元。旧名のまま）
 MEMO_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_memo.json")       # メモページ（旧版の保存先・取り込み元。旧名のまま）
 REMIND_STATE = os.path.join(os.path.expanduser("~"), ".mind_navi_reminders.json")  # 重要期限を最後に出した日
@@ -2410,6 +2451,57 @@ def rp_due(path, now_=None, pc=None):
             last.setdefault(kind, t)
     return [k for k, sec in RP_PERIODIC
             if k not in last or (now_ - last[k]).total_seconds() >= sec]
+
+
+# ---- 使用中の札（4.6）：ほかの PC で同じファイルを開いたままか分かるように、データフォルダの
+# Mind_Navi_backups/<名前>/inuse_<PC の名前>.json に「開いている PC と時刻」を置く（5分ごとに書き直し、閉じたら消す）。
+# データではない（中身は PC の名前と時刻だけ）。15分以上書き直されていない札は、開いたまま止まった PC として無視する
+INUSE_FRESH = 15 * 60
+
+
+def inuse_path(path, pc=None):
+    return os.path.join(rp_dirs(path)[1], f"inuse_{pc or rp_pc_name()}.json")
+
+
+def inuse_write(path, pc=None, now_=None):
+    try:
+        fp = inuse_path(path, pc)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"pc": pc or rp_pc_name(), "ver": APP_VERSION,
+                       "at": (now_ or datetime.datetime.now()).isoformat(timespec="seconds")}, f)
+        os.replace(fp + ".tmp", fp)
+    except OSError:
+        pass
+
+
+def inuse_clear(path, pc=None):
+    try:
+        os.remove(inuse_path(path, pc))
+    except OSError:
+        pass
+
+
+def inuse_others(path, pc=None, now_=None):
+    """ほかの PC の新しい札：[{pc, at(日時), ver}]（自分の PC と、古い札は入れない）"""
+    pc, now_, out = pc or rp_pc_name(), now_ or datetime.datetime.now(), []
+    d = rp_dirs(path)[1]
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for f in names:
+        if not (f.startswith("inuse_") and f.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(d, f), encoding="utf-8") as fp:
+                r = json.load(fp)
+            at = datetime.datetime.fromisoformat(str(r.get("at")))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if r.get("pc") and r.get("pc") != pc and 0 <= (now_ - at).total_seconds() <= INUSE_FRESH:
+            out.append({"pc": r["pc"], "at": at, "ver": r.get("ver", "")})
+    return out
 
 
 def rp_periodic(path, data):
@@ -2936,8 +3028,8 @@ SHORTCUTS = [   # ("§ 見出し", None) は区切り。メニューと同じ並
     ("表示 → デザインスタイル／上の「デザイン」", "全画面の配色：オフィス・ハッカー（黒と緑）・深海・仏教（初期仏教）。4象限の色の決まりはそのまま"),
     ("🧘 Vipassana（各画面の右上）", "10分の瞑想。始めと終わりに鈴の音、終わったら気づきのクオリティを5段階の顔で記録（振り返りで集計）"),
     ("カレンダーの 📍居住地", "日の出・日の入り・薄明・薄暮（この PC で計算）と満潮・干潮（ネット、つながらなければ概算≈）の線、大潮・中潮など"),
-    ("デイリー欄の ▼展開／▬縮小／▲たたむ", "縮小はスケジュールを優先。デイリー欄とスケジュールの境界はドラッグで高さを変えられる"),
-    ("1日の回数のタスク", "設定回数を達成するたびに王冠 ♛ が1つ付き、続けて次の回のチェックが出る（振り返り・週間実績で王冠の数）"),
+    ("デイリー欄の境界の右端のボタン", "表示件数を 緊急のみ・5件・10件・全て から選ぶ。デイリー欄とスケジュールの境界はドラッグで高さを変えられる"),
+    ("1日の回数のタスク", "設定回数を達成するたびに王冠 ♛ が1つ付き、続けて次の回のチェックが出る（振り返り・タスク実績で王冠の数）"),
     (f"{ACC}+P（重要期限のタスク）", "📌 タスクリストで「重要期限」をたたんでも常に表示する／やめる"),
     ("デイリー欄のタスクを上下にドラッグ", "表示の順番を変える（繰り返しタスクは全部の回に反映）"),
     ("タスク分析マップの円をカレンダーへドラッグ", "その日時にタスクを設定（タスクリストからと同じ）"),
@@ -3805,12 +3897,49 @@ def run_gui(path=None):
                 self.set_status("ほかの PC・スマホの変更を取り込みました")
             return True
 
+        def _ask_inuse(self, p):
+            """ほかの PC の使用中の札があれば知らせて、「見るだけで開く」か選ぶ。札を書く"""
+            ap = os.path.abspath(p)
+            ro = self.__dict__.setdefault("_readonly", set())
+            ro.discard(ap)
+            others = inuse_others(p)
+            if others:
+                who = "、".join(f"「{o['pc']}」（{o['at'].strftime('%H:%M')} に確認）" for o in others)
+                if messagebox.askyesno(APP_NAME, f"このファイルは、ほかの PC {who}で開いたままです。\n\n"
+                                                 "はい：見るだけで開く（この PC では保存しません）\n"
+                                                 "いいえ：ふつうに開く（両方で入力しても、保存のときにまとめるので消えません）",
+                                       parent=self.root):
+                    ro.add(ap)
+                    self.root.after(300, lambda: self.set_status("見るだけで開いています（この PC では保存しません）。"
+                                                                 "編集するときは、ほかの PC で閉じてから開き直してください"))
+                    return
+            BG_WRITER.put(lambda p=p: inuse_write(p))
+            self._inuse_at = time.monotonic()
+
+        def _inuse_tick(self):
+            """5分ごとに使用中の札を書き直す（開いている間だけ）"""
+            if time.monotonic() - getattr(self, "_inuse_at", 0) < 300:
+                return
+            self._inuse_at = time.monotonic()
+            ro = self.__dict__.get("_readonly", set())
+            for p_ in self._open_paths():
+                if os.path.abspath(p_) not in ro:
+                    BG_WRITER.put(lambda p_=p_: inuse_write(p_))
+
         def _write_doc(self, path, mm, history=None):
             """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存。
             保存の前に、データが大きく減っていないか確かめる（減っていれば前の中身を「保存前の退避」として残して知らせる）。
             1時間ごと・毎日・毎月の復元ポイントも残す"""
             ap = os.path.abspath(path)
+            if ap in self.__dict__.get("_readonly", set()):   # 見るだけで開いたファイルは保存しない（使用中の札。4.6）
+                self.set_status("見るだけで開いています（この PC では保存しません）")
+                return
             d_ = mm.to_dict()
+            base_v = ((self.__dict__.get("_base_doc") or {}).get(ap) or {}).get("view") or {}
+            for k in SHARED_VIEW_KEYS:   # 別画面のデータの欄（振り返り・IN/OUT_Navi など）は丸ごと無くならない（4.6）
+                if k not in d_.setdefault("view", {}) and k in base_v:
+                    mm.view[k] = copy.deepcopy(base_v[k])
+                    d_["view"][k] = copy.deepcopy(base_v[k])
             d_ = self._merge_outside(path, ap, mm, d_)   # ほかの PC・スマホの変更があれば、上書きせずにまとめる
             sc_ = data_score(d_)
             fp_ = {"ver": APP_VERSION, "at": now(), **sc_}   # 保存したときの数（次に開いたときに減っていないか比べる）
@@ -3888,6 +4017,8 @@ def run_gui(path=None):
                 self.redraw()
                 for attr in ("shop_win", "grocery_win"):
                     w = getattr(self, attr, None)
+                    if w is not None and w.win.winfo_exists() and getattr(w, "_lh", None) is not None:
+                        w._lh = ListHistory(w.data)   # ほかの PC の変更を取り込んだ → Ctrl+Z でそれを消さないよう、ここから数え直す
                     if w is not None and w.win.winfo_exists() and not getattr(w, "_cell", None):
                         w.refresh()
                 rw = getattr(self, "review_win", None)
@@ -4061,6 +4192,7 @@ def run_gui(path=None):
                     pass
                 if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのままバックアップへ
                     BG_WRITER.put(lambda p=p, raw_=raw_: rp_on_open(p, raw_))
+                    self._ask_inuse(p)   # ほかの PC で開いたままなら知らせる（使用中の札。4.6）
                 try:
                     d0_ = json.loads(raw_.decode("utf-8"))
                     self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(d0_)
@@ -5667,12 +5799,14 @@ def run_gui(path=None):
                 self.show_in_calendar(n["id"])
                 if self.cal_mode != "week":
                     self.set_cal_mode("week", self.cal_date)
+                self.root.after(150, lambda nid=n["id"]: self.flash_node(nid))   # 移った先でそのタスクを点滅（4.6）
                 return
             if n and n.get("sessions"):
                 se = sorted(n["sessions"], key=lambda x: (x.get("date") or "", x.get("start") or ""))[-1]
                 self.set_style("calendar")
                 self.set_cal_mode("week", _date(se.get("date")) or datetime.date.today())
                 self.select(n["id"])
+                self.root.after(150, lambda nid=n["id"]: self.flash_node(nid))
                 return
             self.set_style("calendar")
             if self.cal_mode != "week":
@@ -5689,6 +5823,7 @@ def run_gui(path=None):
                 pass
             if self.sel and self.sel in self.mm.nodes:
                 self.show_in_mindmap(self.sel)
+                self.root.after(150, lambda nid=self.sel: self.flash_node(nid))   # 移った先でそのタスクを点滅（4.6）
             else:
                 self.set_style("mindmap")
 
@@ -6323,8 +6458,8 @@ def run_gui(path=None):
             cp = section("compass", "ウィークリーコンパス", header=False)
             self.compass = tk.Frame(cp, bg="#fff8e1", highlightthickness=0)
             self.compass.pack(fill="both", expand=True)
-            # 2) 週間実績（コンパスの週の達成・トライアル・積み上げ）
-            wk = section("weekly", "週間実績", scroll=True, stretch="always")
+            # 2) タスク実績（4.6：いちばん上に1日の分析、その下に1週間の実績）
+            wk = section("weekly", "タスク実績", scroll=True, stretch="always")
             self.rate_cv = None
             self.week_cv = tk.Canvas(wk, height=300, bg="#fbfcfe", highlightthickness=0, bd=0)
             self.week_cv.pack(fill="x", anchor="n")
@@ -8210,7 +8345,9 @@ def run_gui(path=None):
         def update_title(self):
             name = os.path.basename(self.path) if self.path else "無題"
             out_ = self.path and getattr(self, "data_dir", None) and not self.in_data_dir(self.path)
-            self.root.title(f"{APP_NAME} {APP_VERSION} - {name}{' *' if self.dirty else ''}"
+            ro_ = self.path and os.path.abspath(self.path) in self.__dict__.get("_readonly", set())
+            self.root.title(f"{APP_NAME} {APP_VERSION} - {name}{'（見るだけ・保存しません）' if ro_ else ''}"
+                            f"{' *' if self.dirty else ''}"
                             + ("　⚠ Googleドライブのデータフォルダの外に保存中" if out_ else ""))
             self.refresh_filter_ui()
             self.v_layout.set(self.mm.layout_mode(self.style))
@@ -8268,7 +8405,7 @@ def run_gui(path=None):
             self._mod = getattr(self, "_mod", 0) + 1
             d = json.loads(snap)
             keep_cp = self.mm.view.get("compass")   # コンパスの記入は元に戻す対象にしない
-            keep = {k: self.mm.view[k] for k in SHARED_VIEW_KEYS if k in self.mm.view}   # 別画面のデータもそのまま
+            keep = {k: self.mm.view[k] for k in UNDO_KEEP_VIEW if k in self.mm.view}   # 別画面のデータ・記入もそのまま
             self.mm = MindNavi.from_dict(d)
             self.mm.view.update(keep)
             if keep_cp is not None:
@@ -8608,6 +8745,8 @@ def run_gui(path=None):
                                                                  round(self.oy, 1)]
 
         def set_style(self, style):
+            if getattr(self, "place_mode", None):   # 置き場所を決める途中で画面を切り替えた → そこで配置済み
+                self.finish_placement()
             nav_ = getattr(self, "list_nav", None)
             if nav_ is not None and nav_.pending:   # 画面を切り替えた → タスクリストを並べ替え
                 self.root.after_idle(nav_.resort)
@@ -9562,10 +9701,12 @@ def run_gui(path=None):
                 Hc_ = max(c.winfo_height(), 300)
                 if getattr(self, "lane_h_user", None):   # 境界をドラッグで決めた高さ
                     cap = max(24, min(int(Hc_ * 0.75), int(self.lane_h_user)))
-                elif mode_ == "shrink":   # 縮小：4件
-                    cap = 4 * 22 + 6
-                else:   # デフォルト：8件／たたむ：緊急のものだけ（最大8件）
-                    cap = min(int(Hc_ * 0.6), 8 * 22 + 6)
+                elif mode_ == "shrink":   # 5件
+                    cap = 5 * 22 + 6
+                elif mode_ == "all":   # 全て：デイリータスクを全部（入りきらないときだけスクロール）
+                    cap = max(24, int(Hc_ * 0.85))
+                else:   # 10件／緊急のみ（最大10件）
+                    cap = min(int(Hc_ * 0.7), 10 * 22 + 6)
                 self._lane_cap = cap
                 self._lane_full = need
                 if need <= cap:
@@ -9607,6 +9748,7 @@ def run_gui(path=None):
                 self._draw_timegrid(days, occ, info, ghost, moving)
                 self._draw_sun_over()   # 日の出などの線がタスクで隠れないように上にも重ねる
                 self._draw_allday(days, allday, info, moving)
+                c.tag_raise("calnav:lanecycle")   # 表示件数の切り替えはデイリータスクに隠れないよう、いちばん上に
                 if self._sumw(W):
                     self._draw_week_summary(days, gx0 + 7 * dw, W, H)
             # 見出し（表示切替・前後移動・同期）
@@ -9912,6 +10054,14 @@ def run_gui(path=None):
                             lst.remove(n)
                         lst.insert(0, n)
                         self._rem_lane.add((n["id"], d))
+            done_ids = {x["id"] for lst in out.values() for x in lst if isinstance(x, dict) and x.get("id")}
+            for n in self.mm.nodes.values():   # 【4.6】完了した重要期限（日時なし）：完了した日のデイリー欄に目立たない表示で残す
+                if not n.get("remind") or n.get("status") != "done" or n.get("sched_date") or n.get("repeat") \
+                        or n["id"] in done_ids or n["id"] in uh or not ok(n):
+                    continue
+                dd = _date(str(n.get("done_at") or "")[:10])
+                if dd and days[0] <= dd <= days[-1]:
+                    out.setdefault(dd, []).append(n)
             for d, lst in out.items():   # 勤務シフトはデイリー欄のいちばん上
                 sh = [n for n in lst if n.get("shift_code")]
                 if sh:
@@ -10019,8 +10169,8 @@ def run_gui(path=None):
             dk_ = sum(1 for d in days for n in allday.get(d, []) if n.get("kind") != "event" and self._occ_done(n, d))
             # 境界（デイリー欄とスケジュールの間）：ドラッグで高さを変えられる印
             c.create_line(gx0, y1 - 1, W, y1 - 1, fill="#adb5bd", width=3, tags=("lanesash",))
-            mode_ = getattr(self, "lane_mode", "shrink")   # 境界のいちばん右：表示の切り替え（デフォルト → たたむ → 縮小）
-            lbl_ = {"expand": "≡ 8件", "fold": "⚠ 緊急のみ", "shrink": "≡ 4件"}.get(mode_, "≡ 8件")
+            mode_ = getattr(self, "lane_mode", "shrink")   # 境界のいちばん右：表示する件数の切り替え（押すと一覧）
+            lbl_ = LANE_LABELS.get(mode_, LANE_LABELS["expand"])
             t = c.create_text(W - 8, y1 - 9, text=lbl_ + " ▾", anchor="e", font=self.font(7.5, bold=True), fill="#ffffff",
                               tags=("calnav", "calnav:lanecycle"))
             b = c.bbox(t)
@@ -10199,7 +10349,7 @@ def run_gui(path=None):
                               fill="#adb5bd", justify="right")
             c.create_line(self._clw(), y1, W, y1, fill="#ced4da")
 
-        # ---- 週間実績（週表示の右端）：達成（件数）・トライアル・繰り返し・やる気の数字 ----
+        # ---- タスク実績（左パネル）：達成（件数）・トライアル・繰り返し・やる気の数字 ----
         def week_done_count(self, n, d0, d1):
             """d0〜d1（今日まで）に実施した回数（繰り返しの回・複数回実施・続き／繰り返しタスクの回もそれぞれ数える）"""
             today = datetime.date.today()
@@ -10268,7 +10418,7 @@ def run_gui(path=None):
             return self._fonts[key]
 
         def _schedule_week_panel(self):
-            """週間実績の描き直しは少し後にまとめて1回（入力・操作を待たせない）"""
+            """タスク実績の描き直しは少し後にまとめて1回（入力・操作を待たせない）"""
             if getattr(self, "_wk_job", None):
                 return
             try:
@@ -10285,7 +10435,14 @@ def run_gui(path=None):
             mon = self._compass_week()
             days = [mon + datetime.timedelta(days=i) for i in range(7)]
             W = max(c.winfo_width(), 220) - 10
-            y = self._draw_week_summary(days, -4, W, 4000, c=c, fixed=True, y0=0)
+            day = getattr(self, "cal_sel_date", None) if self.style == "calendar" else None
+            self._wk_day = day if self.style == "calendar" else None
+            day = day if isinstance(day, datetime.date) else datetime.date.today()   # 1日の分析：今日（カレンダーで選んだ日）
+            y = self._draw_week_summary([day], -4, W, 4000, c=c, fixed=True, y0=0,
+                                        title=f"1日の分析　{day.month}/{day.day}（{'月火水木金土日'[day.weekday()]}）",
+                                        word="この日")
+            y = self._draw_week_summary(days, -4, W, 8000, c=c, fixed=True, y0=y + 8,
+                                        title="1週間の実績", word="今週")
             h = int((y or 300) + 10)
             if int(c.cget("height")) != h:
                 c.configure(height=h)
@@ -10299,8 +10456,9 @@ def run_gui(path=None):
                     self.show_qpop(force=True)
                     return
 
-        def _draw_week_summary(self, days, x0, W, H, c=None, fixed=False, y0=30):
-            """週間実績（コンパスの下の欄に描く。fixed=True なら拡大率によらない文字の大きさ）"""
+        def _draw_week_summary(self, days, x0, W, H, c=None, fixed=False, y0=30, title=None, word="今週"):
+            """タスク実績（コンパスの下の欄に描く。fixed=True なら拡大率によらない文字の大きさ）。
+            days が1日なら「1日の分析」、7日なら「1週間の実績」。word は見出しの言葉（この日／今週）"""
             c = c or self.canvas
             F = (lambda sz, bold=False: self._pfont(sz, bold)) if fixed else (lambda sz, bold=False: self.font(sz, bold=bold))
             d0, d1 = days[0], days[-1]
@@ -10310,11 +10468,13 @@ def run_gui(path=None):
             fh, fb, fn, fs = F(9, True), F(8, True), F(8), F(7)
             x, xr = x0 + 10, W - 10
             y = y0 + 6
-            if not fixed:
-                c.create_text(x, y, anchor="nw", text="週間実績", font=F(10, True), fill="#1864ab", tags=("weeksum",))
-            c.create_text(xr, y + 3, anchor="ne", text=f"{d0.month}/{d0.day}〜{d1.month}/{d1.day}", font=fs,
-                          fill="#868e96", tags=("weeksum",))
-            y += 24 if not fixed else 4
+            if title or not fixed:
+                c.create_text(x, y, anchor="nw", text=title or "タスク実績", font=F(10, True), fill="#1864ab",
+                              tags=("weeksum",))
+            if d0 != d1:
+                c.create_text(xr, y + 3, anchor="ne", text=f"{d0.month}/{d0.day}〜{d1.month}/{d1.day}", font=fs,
+                              fill="#868e96", tags=("weeksum",))
+            y += 24 if (title or not fixed) else 4
 
             def head(t):
                 nonlocal y
@@ -10361,7 +10521,8 @@ def run_gui(path=None):
                               fill=self._rate_color(dn / tot), tags=("weeksum",))
                 y += 18
             if not qd_:
-                c.create_text(x, y, anchor="nw", text="今週のタスクはまだありません", font=fs, fill="#adb5bd", tags=("weeksum",))
+                c.create_text(x, y, anchor="nw", text=f"{word}のタスクはまだありません", font=fs, fill="#adb5bd",
+                              tags=("weeksum",))
                 y += 18
             y += 6
             # ① 達成：左から 棒グラフ（実施件数）・実施件数／設定数・達成率
@@ -10392,7 +10553,11 @@ def run_gui(path=None):
             # ② トライアル：1週間に何回実施したか（曜日ごとの印）
             trials = [n for n in self.mm.nodes.values() if n.get("trial")]
             y += 6
-            head("トライアル（今週の実施回数）")
+            head(f"トライアル（{word}の実施回数）")
+            if trials:   # 凡例：丸の濃さ＝実施した回数、王冠の色＝王冠の数
+                c.create_text(x, y - 2, anchor="nw", text="● 濃いほど実施回数が多い　♛ 色で王冠の数（黄 1・金 2・橙 3〜）",
+                              font=fs, fill="#868e96", tags=("weeksum",))
+                y += 14
             if not trials:
                 c.create_text(x, y, anchor="nw", text="タスクの設定で「トライアル」にすると\nここに回数が出ます", font=fs,
                               fill="#adb5bd", tags=("weeksum",))
@@ -10405,18 +10570,30 @@ def run_gui(path=None):
                 c.create_text(xr, y, anchor="ne", text=f"{k}回", font=F(10, True), fill="#e8590c",
                               tags=("weeksum", "n:" + tg))
                 y += 16
-                for i, d in enumerate(days):   # 月〜日の実施の印
+                for i, d in enumerate(days):   # 日ごとの印：赤い丸の濃さ＝実施した回数、王冠を取った日は王冠の色＝王冠の数
                     dk = self.week_done_count(n, d, d)
-                    cx = x + 8 + i * ((xr - x - 16) / 6)
-                    c.create_oval(cx - 6, y + 2, cx + 6, y + 14, fill="#e8590c" if dk else "#ffffff",
-                                  outline="#e8590c" if d <= today else "#dee2e6", tags=("weeksum",))
-                    c.create_text(cx, y + 22, text="月火水木金土日"[i], font=fs, fill="#868e96", tags=("weeksum",))
+                    cr = self._crowns(n, d)[0] if self._is_multi(n) else 0
+                    cx = x + 8 + i * ((xr - x - 16) / max(1, len(days) - 1))
+                    if cr:
+                        fill_, line_ = CROWN_COLORS[min(cr, len(CROWN_COLORS)) - 1]
+                        s_ = 13
+                        c.create_polygon([cx - s_ / 2, y + 14, cx - s_ / 2, y + 5, cx - s_ / 4, y + 9, cx, y + 1,
+                                          cx + s_ / 4, y + 9, cx + s_ / 2, y + 5, cx + s_ / 2, y + 14],
+                                         fill=fill_, outline=line_, width=1, tags=("weeksum", "n:" + tg))
+                        if cr > 1:
+                            c.create_text(cx + 9, y + 2, anchor="w", text=str(cr), font=fs, fill=line_, tags=("weeksum",))
+                    else:
+                        c.create_oval(cx - 6, y + 2, cx + 6, y + 14, fill=trial_red(dk) if dk else "#ffffff",
+                                      outline=TRIAL_RED if d <= today else "#dee2e6", tags=("weeksum",))
+                        if dk > 1:
+                            c.create_text(cx + 9, y + 2, anchor="w", text=str(dk), font=fs, fill=TRIAL_RED, tags=("weeksum",))
+                    c.create_text(cx, y + 22, text="月火水木金土日"[d.weekday()], font=fs, fill="#868e96", tags=("weeksum",))
                 y += 34
             # ③ 繰り返しタスク（今週の回数）
             reuse = [n for n in self.mm.nodes.values() if n.get("reusable")]
             if reuse:
                 y += 2
-                head("繰り返しタスク（今週）")
+                head(f"繰り返しタスク（{word}）")
                 for n in reuse:
                     c.create_text(x, y, anchor="nw", text=(n.get("label") or "（無題）")[:12], font=fn, fill="#343a40",
                                   tags=("weeksum",))
@@ -10425,7 +10602,7 @@ def run_gui(path=None):
                     y += 18
             # ④ やる気の数字：今週の実施件数・実施時間・続けて実施した日数
             y += 6
-            head("今週の積み上げ")
+            head(f"{word}の積み上げ")
             R_ = data.get("全体", (0, 0))
             mins = 0
             for n in self.mm.nodes.values():
@@ -10984,7 +11161,7 @@ def run_gui(path=None):
                 self._compass_key = key
                 self._build_compass(mon)
                 self.root.after_idle(self._fit_compass_pane)
-                self._schedule_week_panel()   # 週間実績もコンパスの週に合わせる
+                self._schedule_week_panel()   # タスク実績もコンパスの週に合わせる
 
         def compass_shift(self, step):
             """コンパスの週を前後に。カレンダー表示中はカレンダーの週も一緒に動かす"""
@@ -11509,8 +11686,12 @@ def run_gui(path=None):
                     self.set_cal_mode(nav)
                 elif nav == "daily":   # デイリー欄のたたむ / ひらく
                     self.cycle_lane_mode()
-                elif nav == "lanecycle":   # デフォルト（8件）→ たたむ（緊急のみ）→ 縮小（4件）
-                    self.cycle_lane_mode()
+                elif nav == "lanecycle":   # 表示する件数：緊急のみ・5件・10件・全て から選ぶ
+                    m_ = tk.Menu(self.root, tearoff=0)
+                    for k_ in LANE_ORDER:
+                        m_.add_command(label=("● " if k_ == getattr(self, "lane_mode", "") else "　 ") + LANE_LABELS[k_],
+                                       command=lambda k_=k_: self.set_lane_mode(k_))
+                    self.root.after(10, lambda: m_.tk_popup(ev.x_root, ev.y_root))
                 elif nav.startswith("lane_"):   # 展開・縮小・たたむ
                     self.set_lane_mode(nav[5:])
                 elif nav in ("prev", "next", "today"):
@@ -11792,8 +11973,8 @@ def run_gui(path=None):
             self.cycle_lane_mode()
 
         def set_lane_mode(self, mode):
-            """デイリー欄：expand（デフォルト：8件）／fold（たたむ：緊急のものだけ）／shrink（縮小：4件）"""
-            if mode not in ("expand", "shrink", "fold"):
+            """デイリー欄：fold（緊急のみ）／shrink（5件）／expand（10件）／all（全て）"""
+            if mode not in LANE_ORDER:
                 mode = "expand"
             self.lane_prev = getattr(self, "lane_mode", "expand")
             self.lane_h_user = None
@@ -11804,12 +11985,13 @@ def run_gui(path=None):
                 self.v_daily.set(True)
             self.save_settings()
             self.redraw()
-            self.set_status({"expand": "デイリー欄：デフォルト（8件表示）", "shrink": "デイリー欄：縮小（4件表示）",
-                             "fold": "デイリー欄：たたむ（緊急のもの・重要期限だけ表示）"}.get(mode, ""))
+            self.set_status({"expand": "デイリー欄：10件表示", "shrink": "デイリー欄：5件表示", "all": "デイリー欄：全て表示",
+                             "fold": "デイリー欄：緊急のもの・重要期限だけ表示"}.get(mode, ""))
 
         def cycle_lane_mode(self):
-            """境界の右端のアイコン：デフォルト → たたむ → 縮小 → デフォルト"""
-            nxt = {"expand": "fold", "fold": "shrink", "shrink": "expand"}.get(getattr(self, "lane_mode", "expand"), "expand")
+            """緊急のみ → 5件 → 10件 → 全て → 緊急のみ"""
+            cur = getattr(self, "lane_mode", "expand")
+            nxt = LANE_ORDER[(LANE_ORDER.index(cur) + 1) % len(LANE_ORDER)] if cur in LANE_ORDER else "expand"
             self.set_lane_mode(nxt)
 
         def _lane_urgent(self, n, d):
@@ -11991,13 +12173,17 @@ def run_gui(path=None):
             self.place_mode = {"nid": nid, "rid": rid, "back": back, "fold": prev_fold}
             self.only_this_tree(rid)   # そのツリーを開いて、ほかは一時的にたたむ（決めたら元に戻す）
             self.select(nid)
-            self._show_place_bar()
+            self.touch()
             self.root.after(80, lambda: self.flash_node(nid))
+            self.set_status(f"「{n.get('label', '')}」を「{self.mm.nodes[rid].get('label', '')}」のツリーに入れました。"
+                            "ほかのノードの下にしたいときはドラッグしてください（入れたら配置済み）")
 
         def _place_path(self, nid):
             return " › ".join(self.mm.nodes[a].get("label", "") for a in reversed(self._ancestors(nid)))
 
         def _show_place_bar(self):
+            """【4.6】置き場所の案内の帯（［ここに決定］［後で決定］）は出さない。ドラッグでツリーに入れたら配置済み"""
+            return
             pm = getattr(self, "place_mode", None)
             bar = getattr(self, "place_bar", None)
             if bar is not None:
@@ -12092,6 +12278,15 @@ def run_gui(path=None):
                 bar.destroy()
                 self.place_bar = None
             return pm
+
+        def finish_placement(self):
+            """置き場所を決めたことにする（4.6）：ほかのツリーの開き具合を元に戻し、マップに残る"""
+            pm = self.end_placement()
+            if not pm or pm["nid"] not in self.mm.nodes:
+                return
+            self._restore_fold(pm)
+            self.touch()
+            self.set_status(f"「{self.mm.nodes[pm['nid']].get('label', '')}」を配置しました：{self._place_path(pm['nid'])}")
 
         def decide_placement(self):
             pm = self.end_placement()
@@ -12416,6 +12611,7 @@ def run_gui(path=None):
                 self._check_day_review()   # 11:00・17:10 にその日の振り返り
                 self.adopt_outside_groceries(quiet=True)   # スマホの買い物リストの変更
                 self._check_leave_hourly()
+                self._inuse_tick()   # 使用中の札（5分ごと）
             finally:
                 self.root.after(20000, self._alarm_tick)   # 20 秒ごとに確認
 
@@ -13761,6 +13957,8 @@ def run_gui(path=None):
                 self.root.after_idle(nav_.resort)
             old = self.sel
             self.sel = nid
+            if getattr(self, "_wk_day", None) != (getattr(self, "cal_sel_date", None) if self.style == "calendar" else None):
+                self._schedule_week_panel()   # 1日の分析：カレンダーで選んだ日が変わった
             n = self.mm.nodes.get(nid) if nid else None
             st = "normal" if n else "disabled"
             for w in self.panel_widgets:
@@ -14625,6 +14823,9 @@ def run_gui(path=None):
                     messagebox.showwarning(APP_NAME, str(err))
             self.touch()
             self.set_status()
+            pm = getattr(self, "place_mode", None)
+            if pm and pm.get("nid") == d["nid"]:   # 【4.6】ドラッグでツリーに入れた → 配置済み（マップに残る）
+                self.finish_placement()
             self.redraw()
 
         def _drag_bar(self, d, ev):
@@ -14659,6 +14860,12 @@ def run_gui(path=None):
                 self.hide_qpop()
                 self.select(mi)
                 self.root.after(10, lambda: self.memo_dialog(mi))
+                return "break"
+            ib = self._cal_tag(ev.x, ev.y, "inbox:") if self.style != "calendar" else None
+            if ib and ib in self.mm.nodes:   # 【4.6】マップの「未分類のタスク」：ダブルクリックで設定画面（タスクリストと同じ）
+                self._cancel_dbl()
+                self.select(ib)
+                self.show_qpop(ev.x_root, ev.y_root, refocus=self.canvas, force=True)
                 return "break"
             cid = self.check_at(ev.x, ev.y) if self.style != "calendar" else None
             if cid:   # チェック・反復の＋ボタンの素早い2回目のクリックも1回として扱う
@@ -16798,16 +17005,14 @@ def run_gui(path=None):
             self.canvas.focus_set()
 
         def _drop_new(self, nid):
-            """新規作成を取り消し（作成前の状態に戻す）"""
+            """新規作成を取り消し：作ったノードだけを消す（4.6）。
+            以前はマップ全体を「元に戻す」の記録（振り返り・IN/OUT_Navi・買い物リストなどを入れていない）で
+            置きかえていたため、次の保存でそれらが全部消えていた"""
             if self.history:
-                d = json.loads(self.history.pop())
-                keep_cp = self.mm.view.get("compass")   # コンパスの記入は元に戻す対象にしない
-                self.mm = MindNavi.from_dict(d)
-                if keep_cp is not None:
-                    self.mm.view["compass"] = keep_cp
-                self.mm.view["style"] = self.style
-            else:
+                self.history.pop()   # 作る前の記録は捨てる（マップは置きかえない）
+            if nid in self.mm.nodes:
                 self.mm.remove_node(nid)
+            self.touch()
             self.select(self.mm.parent(nid) if nid in self.mm.nodes else None)
             self.canvas.focus_set()
 
@@ -17263,6 +17468,9 @@ def run_gui(path=None):
                     self.switch_slot(start)
                 self.record_all_view_states()   # 展開状態・表示位置を記録して次回そのまま開く
                 self.save_settings()
+                for p_ in self._open_paths():   # 閉じた → 使用中の札を外す
+                    if os.path.abspath(p_) not in self.__dict__.get("_readonly", set()):
+                        BG_WRITER.put(lambda p_=p_: inuse_clear(p_))
                 for p_ in self._open_paths():   # 閉じたときのバックアップ（最後に保存した中身）
                     try:
                         with open(p_, "rb") as f_:
@@ -17288,7 +17496,7 @@ def run_gui(path=None):
             self._hide_done_default = bool(d.get("hide_done", True))
             self._compass_open_default = bool(d.get("compass_open", True))
             self._daily_open_default = bool(d.get("daily_open", True))
-            self.lane_mode = d.get("lane_mode") if d.get("lane_mode") in ("expand", "shrink", "fold") else \
+            self.lane_mode = d.get("lane_mode") if d.get("lane_mode") in LANE_ORDER else \
                 ("shrink" if self._daily_open_default else "fold")
             self.lane_h_user = d.get("lane_h_user") if isinstance(d.get("lane_h_user"), (int, float)) else None
             sh = d.get("section_h") if isinstance(d.get("section_h"), dict) else {}
@@ -18733,8 +18941,10 @@ def run_gui(path=None):
             if not bb:
                 return
             x, y, w, h = bb
-            for f, (fx, fy, fw, fh) in zip(self.box, ((x, y, w, 2), (x, y + h - 2, w, 2), (x, y, 2, h), (x + w - 2, y, 2, h))):
+            k = 3   # 枠の太さ（4.6：色の付いた行でも選んでいるセルが分かるように太く）
+            for f, (fx, fy, fw, fh) in zip(self.box, ((x, y, w, k), (x, y + h - k, w, k), (x, y, k, h), (x + w - k, y, k, h))):
                 f.place(x=fx, y=fy, width=fw, height=fh)
+                f.lift()
 
         def step(self, dr, dc):
             """↑↓：上下の行、←→：隣の欄"""
@@ -18870,12 +19080,14 @@ def run_gui(path=None):
         def __init__(self, app):
             self.app = app
             d = self.data = groceries_normalize(app.shared_get("groceries"))   # 個数などの入力は消さない
+            self._lh = ListHistory(self.data)
             fam = app.fam_base
             self.font = (fam, 11)
             self._cell = None
             self._drag = None
             w = self.win = tk.Toplevel(app.root)
             w.title("買い物リスト")
+            w.bind(f"<{MOD}-z>", lambda ev: self.undo())
             sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
             w.geometry(f"{min(1100, sw - 60)}x{min(760, sh - 100)}+40+30")
             w.protocol("WM_DELETE_WINDOW", self.close)
@@ -18961,7 +19173,20 @@ def run_gui(path=None):
 
         # ---- データ ----
         def save(self):
+            self._lh.note(self.data)   # 元に戻す（Ctrl+Z）用に前の中身を覚える
             self.app.shared_put("groceries", self.data)
+
+        def undo(self):
+            """Ctrl+Z：1つ前の状態に戻す（30回まで。4.6）"""
+            if self._cell:
+                return None   # 入力中は入力欄の元に戻すだけ
+            if not self._lh.undo(self.data):
+                self.app.set_status("買い物リスト：これ以上元に戻せません（30回まで）")
+                return "break"
+            self.app.shared_put("groceries", self.data)
+            self.refresh()
+            self.app.set_status("買い物リスト：1つ前の状態に戻しました")
+            return "break"
 
         def close(self):
             self.end_cell(True)
@@ -19462,6 +19687,7 @@ def run_gui(path=None):
         def __init__(self, app):
             self.app = app
             self.data = self.load()
+            self._lh = ListHistory(self.data)
             w = self.win = tk.Toplevel(app.root)
             w.title(self.TITLE)
             sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
@@ -19515,7 +19741,22 @@ def run_gui(path=None):
 
         def save(self):
             """マップのデータファイルに保存（自動保存とバックアップの対象）"""
+            lh = getattr(self, "_lh", None)
+            if lh is not None:
+                lh.note(self.data)   # 元に戻す（Ctrl+Z）用に前の中身を覚える
             self.app.shared_put("shopping", self.data)
+
+        def undo(self):
+            """Ctrl+Z・［元に戻す］：1つ前の状態に戻す（入力・状態・削除など。30回まで。4.6）"""
+            if self._cell:
+                return None
+            if not self._lh.undo(self.data):
+                self.lbl_msg.configure(text="これ以上元に戻せません（30回まで）")
+                return "break"
+            self.app.shared_put("shopping", self.data)
+            self.refresh()
+            self.lbl_msg.configure(text="1つ前の状態に戻しました")
+            return "break"
 
         def close(self):
             self._pending = []
@@ -19767,8 +20008,8 @@ def run_gui(path=None):
                                 command=lambda k_=k_: self.set_status([i for i in t.selection() if i != self.NEW], k_))
             mb["menu"] = mm_
             mb.pack(side="right")
-            ttk.Button(bf, text="元に戻す", command=self.undo_delete).pack(side="right", padx=(0, 6))
-            self.win.bind(f"<{MOD}-z>", lambda ev: self.undo_delete() if not self._cell else None)
+            ttk.Button(bf, text="元に戻す", command=self.undo).pack(side="right", padx=(0, 6))
+            self.win.bind(f"<{MOD}-z>", lambda ev: self.undo())   # 入力・状態・削除など、どの変更も30回まで
             self.lbl_msg = ttk.Label(bf, foreground="#2b8a3e")
             self.lbl_msg.pack(side="left", padx=8)
             self._cell = None
@@ -19776,7 +20017,8 @@ def run_gui(path=None):
             self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
                                lambda i: i == self.NEW or self.item(i) is not None,
                                fields=["name", "cat", "status", "life", "value", "price", "sell"],
-                               on_resort=self.apply_sort, new_row=self.NEW)   # 行の入力を終えたら並べ替え
+                               on_resort=self.apply_sort, new_row=self.NEW,   # 行の入力を終えたら並べ替え
+                               color="#212529")   # 選んでいるセルの枠：状態の色の行でも見えるよう濃い色（4.6）
 
         # ---- リスト上で直接入力 ----
         def item(self, iid):
@@ -20604,6 +20846,13 @@ def run_gui(path=None):
             c.create_text(18, (T + B) / 2, text="人\n生\n価\n値\n度\n↑", font=(fam, 9, "bold"), fill="#343a40")
             c.create_text(L, 12, anchor="w", font=(fam, 11, "bold"), fill="#212529",
                           text=f"{mon.replace('-', '年', 1)}月 の IN/OUT_Navi マップ" if mon != "すべて" else "全期間の IN/OUT_Navi マップ")
+            my_ = B + 64   # 金額の凡例（状態の凡例の下）
+            c.create_oval(L, my_ - 6, L + 12, my_ + 6, fill="#dee2e6", outline="#868e96", width=2)
+            t_ = c.create_text(L + 15, my_, anchor="w", text="円の大きさ＝購入金額", font=(fam, 8, "bold"), fill="#495057")
+            x_ = c.bbox(t_)[2] + 12
+            c.create_oval(x_, my_ - 6, x_ + 12, my_ + 6, outline=SELL_RING, width=3, dash=(5, 2))
+            c.create_text(x_ + 15, my_, anchor="w", text="緑の輪＝売却金額（円より外＝高く売れた）", font=(fam, 8, "bold"),
+                          fill=SELL_RING)
             lgx, lgy = L, B + 46   # 状態の凡例（色だけ）：横軸の名前の下
             for k_, n_, _d, col_ in self.STATUSES:
                 c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=mix(col_, 0.55), outline=col_, width=2)
@@ -20611,7 +20860,7 @@ def run_gui(path=None):
                 lgx = c.bbox(tt_)[2] + 12
             rows = [x for x in self.data["items"] if mon == "すべて" or self.month_of(x) == mon]
             rows = [x for x in rows if self.status(x) != "wants" or not x.get("daily")]
-            mx = max([int(x.get("price") or 0) for x in rows] + [1])
+            mx = max([int(x.get("price") or 0) for x in rows] + [self.price_of(x.get("sell")) for x in rows] + [1])
             # 同じマス（必要度×人生価値度）の品は、マスの中に格子状に並べて重ならないようにする
             cells = {}
             for x in rows:
@@ -20640,6 +20889,11 @@ def run_gui(path=None):
                     scol = self.SCOLOR[st]   # 状態は色だけで表す（印・形は使わない。2026-11-08 利用者の指示）
                     c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(scol, 0.6), outline="#212529" if hl else scol,
                                   width=4 if hl else 2.5, tags=tg)
+                    sv_ = self.price_of(x.get("sell"))
+                    if sv_ > 0:   # 売却金額：同じ尺度の緑の輪（円より外＝買った値段より高く売れた、内＝安く売った。4.6）
+                        rs = max(4, rmax * (0.45 + 0.55 * math.sqrt(sv_ / mx)))
+                        c.create_oval(cx - rs, cy - rs, cx + rs, cy + rs, outline=SELL_RING, width=3, dash=(5, 2),
+                                      tags=tg + ("sellring",))
                     nm = x.get("name", "")
                     fsz = 8 if r >= 16 else 7
                     room = max(sub - 4, r * 2)

@@ -326,6 +326,65 @@ class DataFileTest(unittest.TestCase):
         d = json.loads(json.dumps(mm.to_dict()))
         self.assertEqual(len(d["view"]["trash"]), 3)
 
+    def test_cancel_new_node_does_not_replace_map(self):
+        """（4.6）新しいノードの取り消しは、そのノードだけを消す。マップ全体を「元に戻す」の記録（振り返り・
+        IN/OUT_Navi・買い物リストを入れていない）で置きかえない（置きかえると次の保存でそれらが全部消えた）"""
+        with open(APP, encoding="utf-8") as f:
+            src = f.read()
+        body = src.split("def _drop_new(self, nid):", 1)[1].split("\n        def ", 1)[0]
+        self.assertNotIn("from_dict", body)
+        self.assertIn("remove_node", body)
+        for k in ("reviews", "shopping", "groceries", "memo", "day_compass", "trash"):
+            self.assertIn(k, app.UNDO_KEEP_VIEW)
+
+    def test_list_history_undo_30_steps(self):
+        """（4.6）リストの Ctrl+Z：保存のたびに前の中身を覚え、30回まで戻せる。同じ辞書の中身を入れかえる"""
+        data = {"items": [{"id": "a", "price": 1}]}
+        h = app.ListHistory(data)
+        same = data
+        for i in range(2, 40):
+            data["items"][0]["price"] = i
+            h.note(data)
+        h.note(data)   # 変わっていなければ覚えない
+        n = 0
+        while h.undo(data):
+            n += 1
+        self.assertEqual(n, app.UNDO_MAX)
+        self.assertIs(data, same)
+        self.assertEqual(data["items"][0]["price"], 39 - app.UNDO_MAX)
+
+    def test_inuse_notice(self):
+        """（4.6）使用中の札：ほかの PC の新しい札だけを返す。自分の札・古い札・閉じた札は返さない"""
+        import datetime
+        saved = app.BACKUP_DIR
+        app.BACKUP_DIR = os.path.join(self.tmp, "bk")
+        try:
+            f = os.path.join(self.tmp, "drive", "my.json")
+            os.makedirs(os.path.dirname(f))
+            now_ = datetime.datetime(2026, 11, 8, 12, 0, 0)
+            app.inuse_write(f, pc="home", now_=now_)
+            app.inuse_write(f, pc="school", now_=now_ - datetime.timedelta(minutes=5))
+            app.inuse_write(f, pc="lab", now_=now_ - datetime.timedelta(hours=2))   # 止まったまま → 無視
+            self.assertEqual([o["pc"] for o in app.inuse_others(f, pc="home", now_=now_)], ["school"])
+            app.inuse_clear(f, pc="school")
+            self.assertEqual(app.inuse_others(f, pc="home", now_=now_), [])
+            self.assertTrue(os.path.dirname(app.inuse_path(f, "home")).startswith(os.path.join(self.tmp, "drive")))
+        finally:
+            app.BACKUP_DIR = saved
+
+    def test_terms_and_done_never_hidden(self):
+        """（4.6）アドホック → Adhoc に読み替え。以前の「完了済みの枝を隠す」印があっても完了したタスクを隠さない"""
+        d = {"nodes": [{"id": "r", "label": "アドホック"}, {"id": "p", "label": "Activity", "hide_done_kids": True},
+                       {"id": "t", "label": "Dorm port 発送", "kind": "task", "status": "done"}],
+             "edges": [{"source": "p", "target": "t", "relation": app.REL_CHILD}], "view": {}}
+        mm = app.MindNavi.from_dict(d)
+        self.assertEqual(mm.nodes["r"]["label"], "Adhoc")
+        self.assertNotIn("t", mm.hidden_nodes())
+        self.assertTrue(mm.nodes["p"].get("hide_done_kids"))   # 印は消さない（データはそのまま）
+        self.assertLess(app.ver_tuple("4.5"), app.ver_tuple(app.APP_VERSION))
+        self.assertEqual(app.LANE_ORDER, ("fold", "shrink", "expand", "all"))
+        self.assertNotEqual(app.trial_red(1), app.trial_red(3))
+
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
         w = app.BgWriter()
