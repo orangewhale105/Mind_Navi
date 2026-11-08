@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 3.8  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 3.9  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v3.8。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v3.9。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -5564,6 +5564,7 @@ def run_gui(path=None):
                                        font=(self.fam_base, 11, "bold"), padx=6, pady=4)
             self.list_title.pack(side="left", fill="x", expand=True)
             ttk.Button(hdr_, text="📊 分析マップ", command=self.open_task_ana).pack(side="right", padx=2, pady=2)
+            ttk.Button(hdr_, text="⇅ 並べ替える", command=self.resort_list).pack(side="right", padx=2, pady=2)
             sf_ = ttk.Frame(p)   # タスク名で検索（いちばん上）
             sf_.pack(fill="x", pady=(4, 0))
             ttk.Label(sf_, text="🔍").pack(side="left")
@@ -5681,6 +5682,9 @@ def run_gui(path=None):
             t.bind("<<TreeviewSelect>>", self.on_focus_select)
             t.bind("<Delete>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
             t.bind("<BackSpace>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
+            # エクセルと同じ操作：セルを選んで矢印・Tab・Enter で移動、文字を打つと入力（タスク名）、数字キーで 重・必・緊
+            self.list_nav = GridNav(t, list(LIST_COLS), self._list_can_edit, self._list_begin, self._list_activate,
+                                    lambda i: i in self.mm.nodes or i == "__newtask__")
 
             def list_press(ev):   # 選んである行をもう一度クリック → マップ⇔カレンダー
                 iid = t.identify_row(ev.y)
@@ -6187,8 +6191,8 @@ def run_gui(path=None):
             p_ = self.mm.parent(base)
             return bool((self.mm.nodes.get(base) or n).get("adhoc") or (p_ and (self.mm.nodes.get(p_) or {}).get("adhoc_root")))
 
-        def begin_new_task(self):
-            """タスクリストのいちばん下の行に直接入力して、新しいタスクを追加"""
+        def begin_new_task(self, init=None):
+            """タスクリストのいちばん下の行に直接入力して、新しいタスクを追加（Enter で追加して下の行へ。続けて打てば次のタスク）"""
             t = self.focus_tree
             if not t.exists("__newtask__"):
                 return
@@ -6201,8 +6205,13 @@ def run_gui(path=None):
             e = tk.Entry(t, textvariable=v, font=(self.fam_base, 10), relief="solid", bd=1)
             e.place(x=bb[0], y=bb[1], width=max(bb[2], 160), height=bb[3])
             e.focus_set()
+            GridNav.start_text(e, v, init)
+            st = {"done": False}
 
-            def done(commit=True):
+            def done(commit=True, nxt=None):
+                if st["done"]:
+                    return
+                st["done"] = True
                 txt = v.get().strip()
                 try:
                     e.destroy()
@@ -6210,10 +6219,112 @@ def run_gui(path=None):
                     pass
                 if commit and txt:
                     self.add_task_from_list(txt)
-                    self.root.after(30, self.begin_new_task)   # 続けて入力できるように
-            e.bind("<Return>", lambda ev: (done(True), "break")[1])
+                nav = self.list_nav
+                if t.exists("__newtask__"):
+                    nav.set("__newtask__", "label")   # 新しい行にカーソル：続けて打てば次のタスク
+                t.focus_set()
+            self.list_nav.entry_keys(e, lambda dr, dc, wrap: done(True, (dr, dc, wrap)))
             e.bind("<Escape>", lambda ev: (done(False), "break")[1])
             e.bind("<FocusOut>", lambda ev: done(bool(v.get().strip())) if e.winfo_exists() else None)
+
+        # ---- タスクリスト：エクセルと同じ操作 ----
+        def resort_list(self):
+            """「⇅ 並べ替える」：今の並べ替えの設定で並べ直す（完了したタスクも完了済みへ）"""
+            self._list_resnap = True
+            self.refresh_focus_list()
+            self.set_status("タスクリストを並べ替えました")
+
+        def _list_can_edit(self, iid, key):
+            return key == "label" and (iid == "__newtask__" or iid in self.mm.nodes)
+
+        def _list_begin(self, iid, key, init=None):
+            if iid == "__newtask__":
+                self.begin_new_task(init)
+                return
+            if iid not in self.mm.nodes or key != "label":
+                return
+            t = self.focus_tree   # タスク名をその場で変える（リストと同じ文字の大きさ）
+            t.see(iid)
+            t.update_idletasks()
+            bb = t.bbox(iid, LCOL["label"])
+            if not bb:
+                return
+            n = self.mm.nodes[iid]
+            v = tk.StringVar(value=n.get("label", ""))
+            fnt = ttk.Style().lookup("Focus.Treeview", "font") or (self.fam_base, 10)
+            e = tk.Entry(t, textvariable=v, font=fnt, relief="solid", bd=1)
+            e.place(x=bb[0], y=bb[1], width=max(bb[2], 120), height=bb[3])
+            e.focus_set()
+            GridNav.start_text(e, v, init)
+            st = {"done": False}
+
+            def done(commit=True, nxt=None):
+                if st["done"]:
+                    return
+                st["done"] = True
+                txt = v.get().strip()
+                try:
+                    e.destroy()
+                except tk.TclError:
+                    pass
+                if commit and txt and iid in self.mm.nodes and txt != self.mm.nodes[iid].get("label"):
+                    self.checkpoint()
+                    self.mm.nodes[iid]["label"] = txt
+                    self.mm.nodes[iid]["updated"] = now()
+                    self.touch()   # 並びは変えない
+                    self.redraw()
+                if t.exists(iid):
+                    self.list_nav.set(iid, "label")
+                    if nxt:
+                        self.list_nav.step(*nxt)
+                t.focus_set()
+            self.list_nav.entry_keys(e, lambda dr, dc, wrap: done(True, (dr, dc, wrap)))
+            e.bind("<Escape>", lambda ev: (done(False), "break")[1])
+            e.bind("<FocusOut>", lambda ev: done(True) if e.winfo_exists() else None)
+
+        def _list_activate(self, iid, key, ch):
+            """タスク名以外の欄：□＝スペース・Enter で完了、重・必・緊＝1〜6 のキー、分類・日時・カテゴリ・📝＝Enter で設定"""
+            if iid == "__newtask__":
+                if ch == "\r":
+                    self.begin_new_task()
+                    return True
+                return False
+            n = self.mm.nodes.get(iid)
+            if not n:
+                return False
+            if key == "chk" and ch in (" ", "\r") and not n.get("reusable"):
+                self.select(iid)
+                self.toggle_done()
+                self.list_nav.set(iid, key)
+                return True
+            if key in ("imp", "need", "urg") and ch and ch in "123456":
+                self.checkpoint()
+                n[key] = int(ch)
+                n["updated"] = now()
+                self.touch()   # 並びは変えない
+                self.redraw()
+                self.list_nav.set(iid, key)
+                return True
+            if ch != "\r" and not (key == "cat" and ch == " "):
+                return False
+            self.select(iid)
+            if key in ("quad", "imp", "need", "urg"):
+                self.root.after(10, lambda: self.index_dialog(iid))
+            elif key == "due":
+                self.root.after(10, self.schedule_dialog)
+            elif key == "memo":
+                self.root.after(10, lambda: self.memo_dialog(iid))
+            elif key == "cat":
+                t = self.focus_tree
+                bb = t.bbox(iid, LCOL["cat"])
+                m = tk.Menu(self.root, tearoff=0)
+                self._fill_category_menu(m)
+                if bb:
+                    x, y = t.winfo_rootx() + bb[0], t.winfo_rooty() + bb[1] + bb[3]
+                    self.root.after(30, lambda: m.tk_popup(x, y))
+            else:
+                return False
+            return True
 
         def sort_list(self, key):
             """タスクリストの見出し（重・必・緊・分類）：小さい順（1位が上）→ 大きい順 → 並べ替えなし"""
@@ -6225,6 +6336,7 @@ def run_gui(path=None):
             else:
                 self.list_sort = None
             self.save_settings()
+            self._list_resnap = True   # 見出しで並べ替え ＝「並べ替える」を押したのと同じ
             self.refresh_focus_list()
             ls_ = self.list_sort
             self.set_status(f"タスクリストを{LIST_SORTS[ls_[0]]}で並べ替えました（{'6が上' if ls_[1] else '1位が上'}）"
@@ -6296,6 +6408,10 @@ def run_gui(path=None):
                 if gid == "__normal__":   # Adhoc は未完了タスクのいちばん下
                     rows = [r_ for r_ in rows if not self.is_adhoc(self.mm.nodes[r_[0]])] + \
                            [r_ for r_ in rows if self.is_adhoc(self.mm.nodes[r_[0]])]
+                if snap:   # 並べ替えたときの順番のまま（あとから増えたタスクはまとまりの下へ）
+                    big = len(snap) + 1
+                    rows = [r_ for _k, r_ in sorted(enumerate(rows), key=lambda kr: (snap[kr[1][0]][1] if kr[1][0] in snap
+                                                                                     else big + kr[0]))]
                 for iid, vals, tg in rows:
                     if gid == "__remind__" and (self.mm.nodes.get(iid) or {}).get("remind", {}).get("pin"):
                         continue   # 📌 常に表示：一覧の上の別の欄に（スクロールしても見える）
@@ -6334,6 +6450,16 @@ def run_gui(path=None):
             finished = [n for n in items if self.is_done(n) and n not in daily and n not in weekly]   # 完了済み（ふだんはたたむ）
             normal = [n for n in items if n not in daily and n not in weekly and n not in finished]
             normal.sort(key=lambda n: (self.is_placed(n),))   # 未配置を先に
+            snap = self._list_snap if getattr(self, "_list_snap_mm", None) == id(self.mm) and \
+                not getattr(self, "_list_resnap", False) else None
+            if snap:   # エクセルと同じ：「並べ替える」を押すまで、行の場所（まとまり・順番）を変えない（完了にしても動かない）
+                pools = {"__normal__": normal, "__daily__": daily, "__weekly__": weekly, "__done__": finished}
+                newp = {g: [] for g in pools}
+                for g, xs in pools.items():
+                    for n in xs:
+                        g2 = (snap.get(n["id"]) or (None,))[0]
+                        newp[g2 if g2 in pools else g].append(n)
+                normal, daily, weekly, finished = newp["__normal__"], newp["__daily__"], newp["__weekly__"], newp["__done__"]
             if rems:
                 near = dl_(rems[0])   # 見出し：いちばん直近の期限日
                 head_ = (f"{_ymd_text(near)}（{remind_left(rems[0]).replace('残り', '')}）" if near else remind_left(rems[0]))
@@ -6358,6 +6484,13 @@ def run_gui(path=None):
             if not q_:   # いちばん下の行：ここに直接入力して新しいタスクを追加
                 t.insert("", "end", iid="__newtask__", tags=("newrow",),
                          values=list_vals("", "＋ 新しいタスク（クリックして入力）", "", "", quad=""))
+            if not snap and not q_ and flt == "すべて":   # 並べ替えた結果を覚える（次に「並べ替える」を押すまでこの並び）
+                rec_, pos_ = {}, 0
+                for gid_ in t.get_children(""):
+                    for iid_ in t.get_children(gid_):
+                        rec_.setdefault(iid_, (gid_, pos_))
+                        pos_ += 1
+                self._list_snap, self._list_snap_mm, self._list_resnap = rec_, id(self.mm), False
             items = allitems
             if self.sel in self.mm.nodes and t.exists(self.sel) and t.bbox(self.sel) != "" and \
                     (t.parent(self.sel) == "" or t.item(t.parent(self.sel), "open")):
@@ -6365,6 +6498,11 @@ def run_gui(path=None):
                 t.see(self.sel)
             elif t.selection():
                 t.selection_remove(*t.selection())
+            nav_ = getattr(self, "list_nav", None)
+            if nav_ is not None:   # 選んでいるセルの枠
+                if nav_.cur and not t.exists(nav_.cur[0]):
+                    nav_.cur = None
+                self.root.after_idle(nav_.show)
             self.refresh_categories_ui()
             self.refresh_quick_editor()
             left = sum(1 for n in items if n.get("status") != "done")
@@ -6427,8 +6565,14 @@ def run_gui(path=None):
                 return "break"
             if iid == "__newtask__":   # いちばん下の行：ここに直接入力して追加
                 self._ldrag = None
+                self.list_nav.set(iid, "label", see=False)
                 self.root.after(10, self.begin_new_task)
                 return "break"
+            if iid in self.mm.nodes and col:   # クリックしたセルを選ぶ（エクセルと同じ）
+                try:
+                    self.list_nav.set(iid, LIST_COLS[int(col.lstrip("#")) - 1], see=False)
+                except (ValueError, IndexError):
+                    pass
             if iid and col in (LCOL["quad"], LCOL["imp"], LCOL["need"], LCOL["urg"]) and iid in self.mm.nodes:   # 指標 → 入力
                 self.select(iid)
                 self._ldrag = None
