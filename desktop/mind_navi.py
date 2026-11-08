@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.5  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.6  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.5。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.6。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -62,7 +62,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "4.5"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "4.6"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2095,6 +2095,8 @@ GOOGLE_TOKEN = os.path.join(os.path.expanduser("~"), ".mind_navi_google_token.js
 CATEGORY_SETTINGS = os.path.join(os.path.expanduser("~"), ".mind_navi_categories.json")
 NEW_TASK_MIN = 30   # 新しく置くタスクの実施時間（分）の既定
 SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries", "remind_state")   # 別画面のデータ
+# 元に戻す（Ctrl+Z）で前に戻さない記入：別画面のデータ・コンパス・デイリーコンパス・ゴミ箱など（4.6）
+UNDO_KEEP_VIEW = SHARED_VIEW_KEYS + ("compass", "day_compass", "trash", "gcal_trash", "mn_guard")
 SHOP_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_shopping.json")   # 購入分析（旧版の保存先・取り込み元。旧名のまま）
 MEMO_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_memo.json")       # メモページ（旧版の保存先・取り込み元。旧名のまま）
 REMIND_STATE = os.path.join(os.path.expanduser("~"), ".mind_navi_reminders.json")  # 重要期限を最後に出した日
@@ -3811,6 +3813,11 @@ def run_gui(path=None):
             1時間ごと・毎日・毎月の復元ポイントも残す"""
             ap = os.path.abspath(path)
             d_ = mm.to_dict()
+            base_v = ((self.__dict__.get("_base_doc") or {}).get(ap) or {}).get("view") or {}
+            for k in SHARED_VIEW_KEYS:   # 別画面のデータの欄（振り返り・IN/OUT_Navi など）は丸ごと無くならない（4.6）
+                if k not in d_.setdefault("view", {}) and k in base_v:
+                    mm.view[k] = copy.deepcopy(base_v[k])
+                    d_["view"][k] = copy.deepcopy(base_v[k])
             d_ = self._merge_outside(path, ap, mm, d_)   # ほかの PC・スマホの変更があれば、上書きせずにまとめる
             sc_ = data_score(d_)
             fp_ = {"ver": APP_VERSION, "at": now(), **sc_}   # 保存したときの数（次に開いたときに減っていないか比べる）
@@ -8268,7 +8275,7 @@ def run_gui(path=None):
             self._mod = getattr(self, "_mod", 0) + 1
             d = json.loads(snap)
             keep_cp = self.mm.view.get("compass")   # コンパスの記入は元に戻す対象にしない
-            keep = {k: self.mm.view[k] for k in SHARED_VIEW_KEYS if k in self.mm.view}   # 別画面のデータもそのまま
+            keep = {k: self.mm.view[k] for k in UNDO_KEEP_VIEW if k in self.mm.view}   # 別画面のデータ・記入もそのまま
             self.mm = MindNavi.from_dict(d)
             self.mm.view.update(keep)
             if keep_cp is not None:
@@ -16798,16 +16805,14 @@ def run_gui(path=None):
             self.canvas.focus_set()
 
         def _drop_new(self, nid):
-            """新規作成を取り消し（作成前の状態に戻す）"""
+            """新規作成を取り消し：作ったノードだけを消す（4.6）。
+            以前はマップ全体を「元に戻す」の記録（振り返り・IN/OUT_Navi・買い物リストなどを入れていない）で
+            置きかえていたため、次の保存でそれらが全部消えていた"""
             if self.history:
-                d = json.loads(self.history.pop())
-                keep_cp = self.mm.view.get("compass")   # コンパスの記入は元に戻す対象にしない
-                self.mm = MindNavi.from_dict(d)
-                if keep_cp is not None:
-                    self.mm.view["compass"] = keep_cp
-                self.mm.view["style"] = self.style
-            else:
+                self.history.pop()   # 作る前の記録は捨てる（マップは置きかえない）
+            if nid in self.mm.nodes:
                 self.mm.remove_node(nid)
+            self.touch()
             self.select(self.mm.parent(nid) if nid in self.mm.nodes else None)
             self.canvas.focus_set()
 

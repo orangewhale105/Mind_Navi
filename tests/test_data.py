@@ -326,6 +326,17 @@ class DataFileTest(unittest.TestCase):
         d = json.loads(json.dumps(mm.to_dict()))
         self.assertEqual(len(d["view"]["trash"]), 3)
 
+    def test_cancel_new_node_does_not_replace_map(self):
+        """（4.6）新しいノードの取り消しは、そのノードだけを消す。マップ全体を「元に戻す」の記録（振り返り・
+        IN/OUT_Navi・買い物リストを入れていない）で置きかえない（置きかえると次の保存でそれらが全部消えた）"""
+        with open(APP, encoding="utf-8") as f:
+            src = f.read()
+        body = src.split("def _drop_new(self, nid):", 1)[1].split("\n        def ", 1)[0]
+        self.assertNotIn("from_dict", body)
+        self.assertIn("remove_node", body)
+        for k in ("reviews", "shopping", "groceries", "memo", "day_compass", "trash"):
+            self.assertIn(k, app.UNDO_KEEP_VIEW)
+
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
         w = app.BgWriter()
