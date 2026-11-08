@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.2  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.5  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.2。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.5。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -62,6 +62,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
+APP_VERSION = "4.5"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2093,7 +2094,7 @@ GOOGLE_SETTINGS = os.path.join(os.path.expanduser("~"), ".mind_navi_google.json"
 GOOGLE_TOKEN = os.path.join(os.path.expanduser("~"), ".mind_navi_google_token.json")
 CATEGORY_SETTINGS = os.path.join(os.path.expanduser("~"), ".mind_navi_categories.json")
 NEW_TASK_MIN = 30   # 新しく置くタスクの実施時間（分）の既定
-SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries")   # 別画面のデータ
+SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries", "remind_state")   # 別画面のデータ
 SHOP_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_shopping.json")   # 購入分析（旧版の保存先・取り込み元。旧名のまま）
 MEMO_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_memo.json")       # メモページ（旧版の保存先・取り込み元。旧名のまま）
 REMIND_STATE = os.path.join(os.path.expanduser("~"), ".mind_navi_reminders.json")  # 重要期限を最後に出した日
@@ -2277,42 +2278,110 @@ class BgWriter:
 BG_WRITER = BgWriter()
 
 
-# ---- 復元ポイント（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避 を、このPCとデータフォルダの両方に残す ----
-RP_KINDS = (("open", "開いたとき", 30), ("hourly", "1時間ごと", 48), ("daily", "毎日", 120), ("monthly", "毎月", 36),
-            ("guard", "保存前の退避", 30), ("restore", "戻す前", 20))   # （種類, 表示名, 残す数）
-RP_NAME = {k: n for k, n, _c in RP_KINDS}
+# ---- バックアップ（復元ポイント。4.5 で決めなおし、docs/SPEC.md 5.2）----
+# データフォルダ（Google ドライブ）の Mind_Navi_backups と、この PC の両方に同じものを書く。
+# ファイル名：<種類>_<日時>_<PC の名前>_<中身の指紋>[_<版>].json.gz（PC ごとに分ける。互いに上書きしない）
+# 種類ごとに新しいものから決めた数だけ残す（2つ残すと、1つ前は必ず1〜2期間前の中身になり、抜ける期間が出ない）
+RP_KINDS = (("m5", "5分ごと", 2, 5 * 60), ("m30", "30分ごと", 2, 30 * 60), ("h1", "1時間ごと", 2, 3600),
+            ("open", "開いたとき", 10, None), ("close", "閉じたとき", 10, None),
+            ("d1", "1日ごと", 2, 86400), ("d2", "2日ごと", 2, 2 * 86400), ("d3", "3日ごと", 2, 3 * 86400),
+            ("w1", "1週間ごと", 2, 7 * 86400), ("mo1", "1か月ごと", 2, 30 * 86400), ("mo3", "3か月ごと", 2, 91 * 86400),
+            ("y1", "1年ごと", 2, 365 * 86400),
+            ("upgrade", "バージョンアップの前", 0, None),   # 0＝消さない
+            ("guard", "保存前の退避", 30, None), ("restore", "戻す前", 20, None),
+            # 4.4 までの種類：一覧に出して戻せるようにするだけ（新しくは作らない・消さない）
+            ("hourly", "1時間ごと（4.4まで）", 0, None), ("daily", "毎日（4.4まで）", 0, None),
+            ("monthly", "毎月（4.4まで）", 0, None))
+RP_NAME = {k: n for k, n, _c, _p in RP_KINDS}
+RP_KEEP = {k: c for k, _n, c, _p in RP_KINDS}
+RP_PERIODIC = tuple((k, p) for k, _n, _c, p in RP_KINDS if p and k not in ("hourly", "daily", "monthly"))
 RP_SUBDIR = "Mind_Navi_backups"   # データファイルと同じフォルダ（Google ドライブ）に作る
 
 
+def rp_pc_name():
+    """バックアップのファイル名に入れる PC の名前（英数字と - だけ）"""
+    import socket
+    try:
+        n = socket.gethostname() or ""
+    except OSError:
+        n = ""
+    n = re.sub(r"[^A-Za-z0-9-]+", "-", n.split(".")[0]).strip("-")[:30]
+    return n or "PC"
+
+
+def ver_tuple(v):
+    """版番号を比べられる形に（"4.10" > "4.9"）"""
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or "")))
+
+
 def rp_dirs(path):
-    """そのデータファイルの復元ポイントの置き場所：[このPC, データファイルと同じフォルダ]"""
+    """そのデータファイルのバックアップの置き場所：[この PC, データファイルと同じフォルダ]"""
     ap = os.path.abspath(path)
     stem = os.path.splitext(os.path.basename(ap))[0]
     local = os.path.join(BACKUP_DIR, "points", f"{stem}_{zlib.crc32(ap.encode('utf-8')) & 0xffffffff:08x}")
     return [local, os.path.join(os.path.dirname(ap), RP_SUBDIR, stem)]
 
 
-def rp_write(path, kind, data):
-    """復元ポイントを書く（data は保存するファイルの中身。gzip で小さくする）。古いものは種類ごとに決めた数だけ残す"""
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    keep = next((c for k, _n, c in RP_KINDS if k == kind), 30)
+def rp_parse(name):
+    """ファイル名を読む → (種類, 日時, PC の名前, 指紋, 版) か None。4.4 までの「種類_日時」の名前も読む"""
+    if not name.endswith(".json.gz"):
+        return None
+    parts = name[:-8].split("_")
+    if len(parts) < 2:
+        return None
+    try:
+        t = datetime.datetime.strptime(parts[1], "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+    pc = parts[2] if len(parts) >= 4 else ""
+    h = parts[3] if len(parts) >= 4 else ""
+    ver = parts[4][1:] if len(parts) >= 5 and parts[4].startswith("v") else ""
+    return parts[0], t, pc, h, ver
+
+
+def rp_write(path, kind, data, pc=None, ver="", now_=None):
+    """バックアップを書く（data は保存するファイルの中身。gzip で小さくする）。
+    ・同じ PC・同じ種類のいちばん新しいものと中身が同じなら書かない（同じ中身で古いものを押し出さない）
+    ・書いたら読み直して確かめ、確かめられたときだけ、古いものを決めた数まで消す
+    書いた場所の数を返す"""
+    pc = pc or rp_pc_name()
     raw = data if isinstance(data, bytes) else data.encode("utf-8")
+    h = hashlib.sha1(raw).hexdigest()[:10]
+    stamp = (now_ or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    keep = RP_KEEP.get(kind, 30)
+    name = f"{kind}_{stamp}_{pc}_{h}" + (f"_v{ver}" if ver else "") + ".json.gz"
+    n_ = 0
     for d in rp_dirs(path):
         try:
             os.makedirs(d, exist_ok=True)
-            fp = os.path.join(d, f"{kind}_{stamp}.json.gz")
+            mine = sorted((r[1], f) for f in os.listdir(d)
+                          for r in [rp_parse(f)] if r and r[0] == kind and r[2] == pc)
+            if mine and rp_parse(mine[-1][1])[3] == h:
+                continue
+            if kind == "upgrade" and any(rp_parse(f)[3] == h for _t, f in mine):
+                continue
+            fp = os.path.join(d, name)
             with gzip.open(fp + ".tmp", "wb", compresslevel=6) as f:
                 f.write(raw)
+            with gzip.open(fp + ".tmp", "rb") as f:   # 読み直して確かめる
+                ok = hashlib.sha1(f.read()).hexdigest()[:10] == h
+            if not ok:
+                os.remove(fp + ".tmp")
+                continue
             os.replace(fp + ".tmp", fp)
-            olds = sorted(f for f in os.listdir(d) if f.startswith(kind + "_") and f.endswith(".json.gz"))
-            for f in olds[:-keep]:
-                os.remove(os.path.join(d, f))
-        except OSError:
+            n_ += 1
+            mine.append((datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S"), name))
+            mine.sort()
+            if keep > 0:
+                for _t, f in mine[:-keep]:
+                    os.remove(os.path.join(d, f))
+        except (OSError, EOFError):
             pass
+    return n_
 
 
 def rp_list(path):
-    """復元ポイントの一覧（新しい順）：[(日時, 種類, ファイル)]。同じ時刻・種類が両方の場所にあれば1つに"""
+    """バックアップの一覧（新しい順）：[(日時, 種類, ファイル, PC の名前, 版)]。両方の場所にあるものは1つに"""
     seen, out = set(), []
     for d in rp_dirs(path):
         try:
@@ -2320,34 +2389,48 @@ def rp_list(path):
         except OSError:
             continue
         for f in names:
-            if not f.endswith(".json.gz") or "_" not in f:
+            r = rp_parse(f)
+            if not r:
                 continue
-            kind, stamp = f[:-8].split("_", 1)
-            try:
-                t = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S")
-            except ValueError:
+            key = (r[0], r[1], r[2], r[3])
+            if key in seen:
                 continue
-            if (kind, stamp) in seen:
-                continue
-            seen.add((kind, stamp))
-            out.append((t, kind, os.path.join(d, f)))
-    return sorted(out, reverse=True)
+            seen.add(key)
+            out.append((r[1], r[0], os.path.join(d, f), r[2], r[4]))
+    return sorted(out, key=lambda x: x[0], reverse=True)
 
 
-def rp_due(path, now_=None):
-    """保存するときに残すべき定期の復元ポイント（1時間ごと・毎日・毎月）"""
+def rp_due(path, now_=None, pc=None):
+    """いま書くべき定期のバックアップの種類（この PC で、その種類を最後に書いてから期間が過ぎたもの）"""
     now_ = now_ or datetime.datetime.now()
+    pc = pc or rp_pc_name()
     last = {}
-    for t, kind, _f in rp_list(path):
-        last.setdefault(kind, t)
-    due = []
-    if "hourly" not in last or now_ - last["hourly"] >= datetime.timedelta(hours=1):
-        due.append("hourly")
-    if "daily" not in last or last["daily"].date() != now_.date():
-        due.append("daily")
-    if "monthly" not in last or (last["monthly"].year, last["monthly"].month) != (now_.year, now_.month):
-        due.append("monthly")
-    return due
+    for t, kind, _f, p, _v in rp_list(path):
+        if p == pc:
+            last.setdefault(kind, t)
+    return [k for k, sec in RP_PERIODIC
+            if k not in last or (now_ - last[k]).total_seconds() >= sec]
+
+
+def rp_periodic(path, data):
+    """保存したとき：期間が過ぎた種類のバックアップを書く（中身が変わっていなければ書かない）"""
+    for kind in rp_due(path):
+        rp_write(path, kind, data)
+
+
+def rp_on_open(path, raw):
+    """開いたとき（読み替える前の中身のまま）：開いたときのバックアップ、前の版のソフトで保存したファイルなら
+    「バージョンアップの前」（消さない）、閉じていた間に期間が過ぎた種類の定期のバックアップ"""
+    rp_write(path, "open", raw)
+    try:
+        d = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        g = (d.get("view") or {}).get("mn_guard") if isinstance(d, dict) else None
+        ver = str(g.get("ver") or "") if isinstance(g, dict) else ""
+    except (ValueError, AttributeError, UnicodeDecodeError):
+        ver = "?"
+    if not ver or ver_tuple(ver) < ver_tuple(APP_VERSION):
+        rp_write(path, "upgrade", raw, ver=re.sub(r"[^0-9.]", "", ver) or "old")
+    rp_periodic(path, raw)
 
 
 def read_data_file(fp):
@@ -2374,6 +2457,161 @@ def data_score(d):
     items = [x for x in sh.get("items") or [] if isinstance(x, dict)]
     return {"nodes": len((d or {}).get("nodes") or []), "shop": len(items),
             "shop_info": sum(1 for x in items if shop_informed(x)), "groc": len(gr.get("items") or [])}
+
+
+# ---- ゴミ箱（4.4）：消した・外したものは、すべてデータファイルの view.trash に残し、あとから戻せる ----
+TRASH_KEEP = 3000   # 残す数（古いものから消える）
+TRASH_NAMES = {"node": "ノード（マップ）", "task_setting": "タスクの設定・予定・実施の記録", "shop": "IN/OUT_Navi の品",
+               "groc": "買い物リストの品", "staple": "買い物リストの定番"}
+
+
+def trash_add(view, kind, label, data):
+    """ゴミ箱に入れる。data は消す前の中身（コピーして残す）"""
+    import copy as _copy
+    t = view.setdefault("trash", [])
+    t.append({"id": uuid.uuid4().hex[:10], "at": datetime.datetime.now().isoformat(timespec="seconds"),
+              "kind": kind, "label": str(label or "（無題）")[:80], "data": _copy.deepcopy(data)})
+    if len(t) > TRASH_KEEP:
+        del t[:len(t) - TRASH_KEEP]
+
+
+def subtree_snapshot(mm, nid):
+    """ノードとその下位すべて・つながり（エッジ）のコピー（ゴミ箱用）"""
+    ids = {nid} | set(mm.descendants(nid))
+    return {"nodes": [dict(mm.nodes[k]) for k in ids if k in mm.nodes],
+            "edges": [dict(e) for e in mm.edges if e.get("source") in ids or e.get("target") in ids],
+            "root": nid}
+
+
+def trash_restore(mm, entry):
+    """ゴミ箱から戻す（今あるものは変えず、無いものだけ足す）。戻した数を返す"""
+    import copy as _copy
+    kind, d, n_ = entry.get("kind"), entry.get("data") or {}, 0
+    if kind == "node":
+        for nd in d.get("nodes") or []:
+            if nd.get("id") not in mm.nodes:
+                mm.nodes[nd["id"]] = _copy.deepcopy(nd)
+                n_ += 1
+        have = {(e.get("source"), e.get("target"), e.get("relation")) for e in mm.edges}
+        for e in d.get("edges") or []:
+            k = (e.get("source"), e.get("target"), e.get("relation"))
+            if k not in have and e.get("source") in mm.nodes and e.get("target") in mm.nodes:
+                mm.edges.append(dict(e))
+        mm._edge_cache = None
+    elif kind == "task_setting":
+        nd = d.get("node") or {}
+        cur = mm.nodes.get(nd.get("id"))
+        if cur is None:
+            mm.nodes[nd["id"]] = _copy.deepcopy(nd)
+            n_ = 1
+        else:
+            for k, v in nd.items():   # 消えた・空になった項目だけ戻す（今の入力は変えない）
+                if k not in cur or cur.get(k) in (None, "", [], {}):
+                    cur[k] = _copy.deepcopy(v)
+                    n_ = 1
+    elif kind in ("shop", "groc", "staple"):
+        sec = mm.view.setdefault("shopping" if kind == "shop" else "groceries", {})
+        lst = sec.setdefault("staples" if kind == "staple" else "items", [])
+        item = d.get("item") or {}
+        if item.get("id") not in {x.get("id") for x in lst if isinstance(x, dict)}:
+            lst.append(_copy.deepcopy(item))
+            n_ = 1
+    return n_
+
+
+_MISSING = object()
+
+
+def _merge_key(x):
+    """リストの中の要素を見分けるかぎ：id のある辞書は id、ほかは中身そのもの"""
+    if isinstance(x, dict) and "id" in x:
+        return ("id", str(x["id"]))
+    return ("v", json.dumps(x, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def merge3(base, ours, theirs):
+    """3方向のまとめ（4.4）：前回読んだ・保存した中身 base、この PC の今の中身 ours、ファイルの今の中身 theirs（ほかの PC・
+    スマホが書いたもの）を、どちらの変更も消さずにまとめる。
+    ・片方だけが変えた所は、その変更を使う。両方が同じ所を違う値に変えたときは、この PC（ours）を使う。
+    ・辞書は項目ごと、id のある品・ノードのリストは品ごとにまとめる（どちらかで足した品はどちらも残る）。
+    ・消したもの：片方が消して、もう片方が変えていなければ消す（その PC での削除の意図を守る）。
+      もう片方が変えていたら残す（入力を消さない）"""
+    import copy as _copy
+    if ours == theirs:
+        return _copy.deepcopy(ours)
+    if ours == base:
+        return _copy.deepcopy(theirs)
+    if theirs == base:
+        return _copy.deepcopy(ours)
+    if isinstance(ours, dict) and isinstance(theirs, dict):
+        bd = base if isinstance(base, dict) else {}
+        out = {}
+        for k in list(ours) + [k for k in theirs if k not in ours]:
+            ov, tv, bv = ours.get(k, _MISSING), theirs.get(k, _MISSING), bd.get(k, _MISSING)
+            if ov is _MISSING:
+                if bv is not _MISSING and tv == bv:
+                    continue   # この PC で消した（ほかでは変えていない）
+                out[k] = _copy.deepcopy(tv)
+            elif tv is _MISSING:
+                if bv is not _MISSING and ov == bv:
+                    continue   # ほかの PC で消した（この PC では変えていない）
+                out[k] = _copy.deepcopy(ov)
+            else:
+                out[k] = merge3(None if bv is _MISSING else bv, ov, tv)
+        return out
+    if isinstance(ours, list) and isinstance(theirs, list):
+        bm = {_merge_key(x): x for x in (base if isinstance(base, list) else [])}
+        om = {_merge_key(x): x for x in ours}
+        tm = {_merge_key(x): x for x in theirs}
+        out, seen = [], set()
+        for x in list(ours) + list(theirs):   # 並びはこの PC の順、ほかで足したものは後ろに
+            k = _merge_key(x)
+            if k in seen:
+                continue
+            seen.add(k)
+            if k in om and k in tm:
+                out.append(merge3(bm.get(k), om[k], tm[k]) if k[0] == "id" else _copy.deepcopy(om[k]))
+            elif k in om:
+                if k in bm and om[k] == bm[k]:
+                    continue   # ほかの PC で消した
+                out.append(_copy.deepcopy(om[k]))
+            else:
+                if k in bm and tm[k] == bm[k]:
+                    continue   # この PC で消した
+                out.append(_copy.deepcopy(tm[k]))
+        return out
+    return _copy.deepcopy(ours)   # 両方が同じ所を違う値に変えた → この PC の値
+
+
+def fill_missing(cur, old):
+    """足すだけの復元（4.4）：old にあって cur で消えている・空になっているものだけを cur に戻す。今の入力は変えない。
+    辞書は項目ごと、id のある品のリストは品ごと（無い品は足す）、そのほかのリストは無い値を足す。戻した数を返す"""
+    import copy as _copy
+    n = 0
+    if isinstance(cur, dict) and isinstance(old, dict):
+        for k, v in old.items():
+            if k not in cur or cur[k] in (None, "", [], {}):
+                if v not in (None, "", [], {}):
+                    cur[k] = _copy.deepcopy(v)
+                    n += 1
+            elif isinstance(cur[k], (dict, list)) and type(cur[k]) is type(v):
+                n += fill_missing(cur[k], v)
+    elif isinstance(cur, list) and isinstance(old, list):
+        if all(isinstance(x, dict) and "id" in x for x in old) and old:
+            by = {x.get("id"): x for x in cur if isinstance(x, dict)}
+            for x in old:
+                if x["id"] in by:
+                    n += fill_missing(by[x["id"]], x)
+                else:
+                    cur.append(_copy.deepcopy(x))
+                    n += 1
+        else:
+            have = {_merge_key(x) for x in cur}
+            for x in old:
+                if _merge_key(x) not in have:
+                    cur.append(_copy.deepcopy(x))
+                    n += 1
+    return n
 
 
 def shopping_fill_lost(cur, old):
@@ -2638,7 +2876,7 @@ SHORTCUTS = [   # ("§ 見出し", None) は区切り。メニューと同じ並
     ("§ ノードの追加・編集（編集 メニュー）", None),
     (f"{ACC}+Enter / Tab / Enter", "最上位の目標 / サブタスク / 同じ階層 を追加"),
     ("F2", "名前を変更（入力中の Tab で続けてサブタスク）"),
-    ("Delete", "削除（下位ごと。カレンダーでは「カレンダーから外す」）"),
+    ("Delete", "削除（下位ごと。中身があれば確認し、ゴミ箱に入る。カレンダーでは「カレンダーから外す」）"),
     (f"{ACC}+Z / {ACC}+Y", "元に戻す / やり直し"),
     ("↑ / ↓", "同じ階層のタスクと上下を入れ替え（下位も一緒に移動）"),
     ("← / → / Shift+↑↓", "隣のノードへ選択を移動"),
@@ -2768,8 +3006,8 @@ def migrate_old_local_files():
                      (".taskmap_google.json", GOOGLE_SETTINGS), (".taskmap_google_token.json", GOOGLE_TOKEN),
                      (".taskmap_backups", BACKUP_DIR)):
         src = os.path.join(home, old)
-        if os.path.exists(new) or not os.path.exists(src):
-            continue
+        if os.path.exists(new) or os.path.exists(new + ".imported") or not os.path.exists(src):
+            continue   # .imported：データファイルへ取り込み済み（もう PC の中には作らない）
         try:
             if os.path.isdir(src):
                 shutil.copytree(src, new)
@@ -3527,57 +3765,59 @@ def run_gui(path=None):
                 return None
 
         def adopt_outside_groceries(self, path=None, quiet=False):
-            """スマホアプリ（Googleドライブ）で買い物リストだけが書きかえられていたら、その内容を取り込んで続ける。
-            戻り値：取り込んだら True（ほかの部分も変わっていたら False）"""
+            """ほかの PC・スマホがファイルを保存していたら、その変更をこの PC に取り込む（4.4：買い物リストだけでなく全部。
+            3方向でまとめるので、この PC の入力も消えない）。取り込んだら True"""
             path = path or self.path
-            if not path or not self._changed_outside(path):
+            if not path or not path.lower().endswith(".json") or not os.path.exists(path):
                 return False
+            if self._busy_editing() or self._typing_now():
+                return False   # 入力の途中は待つ
             ap = os.path.abspath(path)
             try:
-                with open(ap, encoding="utf-8") as fp:
-                    disk = json.load(fp)
-            except (OSError, ValueError):
+                with open(ap, "rb") as f:
+                    raw = f.read()
+            except OSError:
                 return False
-            sig = getattr(self, "_core_sigs", {}).get(ap)
-            if not sig or self._core_sig(disk) != sig:
-                return False   # 買い物リスト以外も変わっている → これまでどおり確認
-            if getattr(self, "_groc_local", False):
-                mine = self.mm.view.get("groceries") or {}
-                theirs = (disk.get("view") or {}).get("groceries") or {}
-                merged = dict(theirs)   # 両方で変えた：品・定番は id でまとめ、購入の記録は両方を残す
-                for k in ("items", "staples"):
-                    ids = {x.get("id") for x in theirs.get(k, [])}
-                    merged[k] = list(theirs.get(k, [])) + [x for x in mine.get(k, []) if x.get("id") not in ids]
-                hs = {json.dumps(h, sort_keys=True) for h in theirs.get("history", [])}
-                merged["history"] = list(theirs.get("history", [])) + [h for h in mine.get("history", [])
-                                                                       if json.dumps(h, sort_keys=True) not in hs]
-                self.mm.view["groceries"] = merged
-                self.dirty = True
-            else:
-                self.mm.view["groceries"] = (disk.get("view") or {}).get("groceries") or {}
-            self._known_mtime[ap] = os.path.getmtime(ap)
-            self._groc_local = False
-            gw = getattr(self, "grocery_win", None)
+            sha = hashlib.sha1(raw).hexdigest()
+            if sha == self._file_sha.get(ap):
+                return False
             try:
-                if gw is not None and gw.win.winfo_exists():
-                    gw.data = self.mm.view.setdefault("groceries", {"items": [], "staples": [], "history": []})
-                    for k_ in ("items", "staples", "history"):
-                        gw.data.setdefault(k_, [])
-                    gw.refresh()
-            except Exception:
+                theirs = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                return False   # 書きかけ（同期の途中）：次の確認で
+            base = (getattr(self, "_base_doc", None) or {}).get(ap) or {}
+            ours = self.mm.to_dict()
+            merged = merge3(base, ours, theirs)
+            self._apply_doc(self.mm, merged)
+            self._base_doc[ap] = theirs
+            self._file_sha[ap] = sha
+            try:
+                self._known_mtime[ap] = os.path.getmtime(ap)
+            except OSError:
                 pass
+            self.__dict__.setdefault("_saved_score", {})[ap] = data_score(theirs)
+            if merged != theirs:   # この PC の変更もある → 保存して両方をファイルに
+                self.dirty = True
+                self.schedule_autosave()
+            self._groc_local = False
+            self._after_merge_ui()
             if not quiet:
-                self.set_status("スマホの買い物リストの変更を取り込みました")
+                self.set_status("ほかの PC・スマホの変更を取り込みました")
             return True
 
         def _write_doc(self, path, mm, history=None):
             """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存。
             保存の前に、データが大きく減っていないか確かめる（減っていれば前の中身を「保存前の退避」として残して知らせる）。
             1時間ごと・毎日・毎月の復元ポイントも残す"""
+            ap = os.path.abspath(path)
             d_ = mm.to_dict()
+            d_ = self._merge_outside(path, ap, mm, d_)   # ほかの PC・スマホの変更があれば、上書きせずにまとめる
+            sc_ = data_score(d_)
+            fp_ = {"ver": APP_VERSION, "at": now(), **sc_}   # 保存したときの数（次に開いたときに減っていないか比べる）
+            mm.view["mn_guard"] = fp_
+            d_.setdefault("view", {})["mn_guard"] = dict(fp_)
             txt = json.dumps(d_, ensure_ascii=False, indent=2)
             data = txt.encode("utf-8")
-            ap = os.path.abspath(path)
             self._save_guard(path, ap, d_)
             tmp = path + ".tmp"
             with open(tmp, "wb") as f:
@@ -3594,12 +3834,86 @@ def run_gui(path=None):
             self._known_mtime[ap] = os.path.getmtime(path)
             self.__dict__.setdefault("_core_sigs", {})[ap] = self._core_sig(json.loads(txt))
             self.__dict__.setdefault("_saved_score", {})[ap] = data_score(d_)
-            for kind in rp_due(path):   # 定期の復元ポイント（書き込みは別の処理で）
-                BG_WRITER.put(lambda kind=kind, data=data: rp_write(path, kind, data))
+            self.__dict__.setdefault("_base_doc", {})[ap] = json.loads(txt)   # 次のまとめの「前回の中身」
+            BG_WRITER.put(lambda path=path, data=data: rp_periodic(path, data))   # 定期のバックアップ（別の処理で）
             self._groc_local = False
             self._file_sha[ap] = hashlib.sha1(data).hexdigest()
+            if mm is self.mm:
+                self._shop_deleted = 0   # 画面で削除した数（保存の守りで使う）を数え直す
             if history is not None:
                 self._save_undo(path, history)
+
+        def _merge_outside(self, path, ap, mm, d_):
+            """保存の前（4.4）：ファイルが前回読んだ・保存したときから変わっていたら（ほかの PC・スマホが保存した）、
+            上書きせずに3方向でまとめる（merge3）。まとめた中身をこの PC にも反映し、まとめた中身 d_ を返す"""
+            if not path.lower().endswith(".json") or not os.path.exists(path):
+                return d_
+            try:
+                with open(path, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                return d_
+            if hashlib.sha1(raw).hexdigest() == self._file_sha.get(ap):
+                return d_   # 前回のまま：そのまま保存してよい
+            try:
+                theirs = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                return d_   # 書きかけなどで読めない：この PC の中身で保存（前の中身は復元ポイントに残る）
+            base = (getattr(self, "_base_doc", None) or {}).get(ap) or {}
+            merged = merge3(base, d_, theirs)
+            self._apply_doc(mm, merged)
+            if mm is self.mm:
+                self.root.after_idle(self._after_merge_ui)
+                self.set_status("ほかの PC・スマホの変更とまとめて保存しました（どちらの入力も残しています）")
+            return mm.to_dict()
+
+        def _apply_doc(self, mm, d):
+            """まとめた中身 d を、今のマップ mm にその場で反映する（開いている IN/OUT_Navi・振り返りなどの画面が
+            持っているデータの入れ物は同じものを使い続けるので、画面の入力が別の入れ物に書かれて消えることがない）"""
+            new = MindNavi.from_dict(d)
+            for k, v in list(new.view.items()):
+                old = mm.view.get(k)
+                if isinstance(v, dict) and isinstance(old, dict):
+                    old.clear()
+                    old.update(v)
+                    new.view[k] = old
+            mm.nodes, mm.edges, mm.view = new.nodes, new.edges, new.view
+            mm._edge_cache = None
+
+        def _after_merge_ui(self):
+            """まとめた後の画面の描き直し（開いている画面も）"""
+            self._mod = getattr(self, "_mod", 0) + 1
+            try:
+                self.refresh_focus_list()
+                self.redraw()
+                for attr in ("shop_win", "grocery_win"):
+                    w = getattr(self, attr, None)
+                    if w is not None and w.win.winfo_exists() and not getattr(w, "_cell", None):
+                        w.refresh()
+                rw = getattr(self, "review_win", None)
+                if rw is not None and rw.win.winfo_exists():
+                    rw._fill_days_box()
+            except Exception:
+                pass
+
+        def _check_guard_on_open(self):
+            """開いたとき（4.3）：前回 Mind_Navi で保存したときの数より大きく減っていたら知らせて、戻す画面を出す
+            （古い版のPCやほかの道具で上書きされたときに気づけるように）"""
+            st = self.mm.view.get("mn_guard")
+            if not isinstance(st, dict) or not self.path:
+                return
+            now_ = data_score(self.mm.to_dict())
+            names = {"nodes": "ノード", "shop": "IN/OUT_Navi の品", "shop_info": "IN/OUT_Navi の入力（状態・★など）",
+                     "groc": "買い物リストの品"}
+            drop = [k for k in names if int(st.get(k) or 0) >= 5 and now_.get(k, 0) < int(st.get(k) or 0) * 0.5]
+            if not drop:
+                return
+            msg = "、".join(f"{names[k]} {st.get(k)}→{now_.get(k, 0)}" for k in drop)
+            if messagebox.askyesno(APP_NAME, f"前回 Mind_Navi {st.get('ver', '')} で保存したとき（{str(st.get('at', ''))[:16]}）より、"
+                                             f"データが大きく減っています。\n\n{msg}\n\n"
+                                             "古い版の Mind_Navi のPCなどで上書きされた可能性があります。\n"
+                                             "復元ポイントから戻す画面を開きますか？", parent=self.root):
+                self.restore_dialog(focus="shop_info" if "shop_info" in drop else "shop" if "shop" in drop else "nodes")
 
         def _save_guard(self, path, ap, d_):
             """保存しようとしているデータが、前に保存したときより大きく減っていないか（不具合での消失を防ぐ）。
@@ -3691,9 +4005,7 @@ def run_gui(path=None):
                     path, mm, dirty = doc["path"], doc["mm"], doc["dirty"]
                 if not dirty or not path or not path.lower().endswith(".json"):
                     continue   # 無題のマップはバックアップだけ（保存先は［名前を付けて保存］で決める）
-                if self._changed_outside(path) and not (j == self.cur and self.adopt_outside_groceries(path, quiet=True)):
-                    warn.append(os.path.basename(path))
-                    continue   # 別の場所での変更を上書きしない（バックアップには残る）
+                # （4.4）ほかの PC・スマホがファイルを変えていても止めない：_write_doc で両方の変更をまとめてから保存する
                 try:
                     if j == self.cur:
                         self.mm.view.update(style=self.style, auto_layout=self.v_auto.get())
@@ -3743,8 +4055,12 @@ def run_gui(path=None):
                 with open(p, "rb") as fb_:
                     raw_ = fb_.read()
                 self._file_sha[os.path.abspath(p)] = hashlib.sha1(raw_).hexdigest()
-                if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのまま復元ポイントへ
-                    BG_WRITER.put(lambda p=p, raw_=raw_: rp_write(p, "open", raw_))
+                try:   # 3方向のまとめの「前回の中身」（ほかの PC の変更と合わせるときに使う）
+                    self.__dict__.setdefault("_base_doc", {})[os.path.abspath(p)] = json.loads(raw_.decode("utf-8"))
+                except ValueError:
+                    pass
+                if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのままバックアップへ
+                    BG_WRITER.put(lambda p=p, raw_=raw_: rp_on_open(p, raw_))
                 try:
                     d0_ = json.loads(raw_.decode("utf-8"))
                     self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(d0_)
@@ -3896,14 +4212,17 @@ def run_gui(path=None):
 
         def restore_dialog(self, focus=None):
             """復元ポイントから戻す（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避・自動保存の版 から選び、
-            全部／IN/OUT_Navi だけ／買い物リストだけ を戻す、または IN/OUT_Navi の消えた入力だけを補う。
+            消えたもの・空になったものだけを足して戻す（今の入力は変えない。4.4）、または IN/OUT_Navi の消えた入力だけを補う。
             戻す前の中身も復元ポイント「戻す前」に残すので、やり直せる"""
             if not self.path:
                 messagebox.showinfo(APP_NAME, "保存先のあるマップで使えます", parent=self.root)
                 return
             self.on_transition("復元の前", defer=False)
             BG_WRITER.flush()
-            cands = [(t, RP_NAME.get(k, k), fp) for t, k, fp in rp_list(self.path)]
+            cands = []
+            for t, k, fp, pc_, ver_ in rp_list(self.path):   # 種類（どの PC で作ったか。バージョンアップの前は元の版）
+                nm = RP_NAME.get(k, k) + (f" {ver_}" if k == "upgrade" and ver_ else "")
+                cands.append((t, nm + (f"（{pc_}）" if pc_ else ""), fp))
             for t_, bp in self._backup_candidates(self.path):   # 以前からの自動保存の版・同じフォルダのバックアップ
                 kind = "同じフォルダの .backup" if bp == mirror_path(self.path) else "自動保存の版"
                 cands.append((datetime.datetime.fromtimestamp(t_), kind, bp))
@@ -3917,12 +4236,12 @@ def run_gui(path=None):
             w.geometry("860x560")
             ttk.Label(w, padding=(10, 8), wraplength=820, justify="left",
                       text=f"「{os.path.basename(self.path)}」の復元ポイント（新しい順）。選ぶと下に中身の数を表示します。\n"
-                           "戻す前の中身は復元ポイント「戻す前」に残るので、いつでもやり直せます。"
+                           "戻すときは、この時点にあって今は消えている・空になっているものだけを足します（今の入力は変えません）。"
                            "Google ドライブの「版を管理」でダウンロードした古いファイルは［ファイルを選ぶ…］で使えます。").pack(anchor="w")
             tf = ttk.Frame(w)
             tf.pack(fill="both", expand=True, padx=10)
             tv = ttk.Treeview(tf, columns=("t", "k", "w"), show="headings", selectmode="browse")
-            for c, txt, wd in (("t", "日時", 170), ("k", "種類", 170), ("w", "場所", 460)):
+            for c, txt, wd in (("t", "日時", 160), ("k", "種類（作った PC）", 290), ("w", "場所", 350)):
                 tv.heading(c, text=txt)
                 tv.column(c, width=wd, anchor="w")
             sb = ttk.Scrollbar(tf, orient="vertical", command=tv.yview)
@@ -3995,16 +4314,18 @@ def run_gui(path=None):
             bf.pack(fill="x")
             ttk.Button(bf, text="ファイルを選ぶ…", command=pick_file).pack(side="left")
             ttk.Button(bf, text="閉じる", command=w.destroy).pack(side="right")
-            for txt, mode in (("全部をこの時点に戻す", "all"), ("買い物リストだけ戻す", "groc"), ("IN/OUT_Navi だけ戻す", "shop"),
-                              ("IN/OUT_Navi の消えた入力を補う", "fill")):
+            # 【4.4】戻すのは「足すだけ」：この時点にあって今は消えている・空になっているものだけを戻し、今の入力は変えない
+            #（以前の「全部をこの時点に戻す」などの上書きは、その後の入力を消すので廃止）
+            for txt, mode in (("この時点から、消えたものを戻す", "fill_all"), ("IN/OUT_Navi の消えた入力を補う", "fill")):
                 ttk.Button(bf, text=txt, command=lambda m=mode: do(m)).pack(side="right", padx=3)
             if rows:
                 first = next(iter(rows))
-                if focus == "fill":   # IN/OUT_Navi の入力がいちばん多いものを選んでおく
+                if focus:   # その数（IN/OUT_Navi の入力など）がいちばん多い時点を選んでおく
+                    metric = "shop_info" if focus == "fill" else focus
                     best = None
                     for iid in list(rows)[:200]:
                         try:
-                            n_ = data_score(load(iid))["shop_info"]
+                            n_ = data_score(load(iid)).get(metric, 0)
                         except (OSError, ValueError, EOFError):
                             continue
                         if best is None or n_ > best[0]:
@@ -4013,56 +4334,106 @@ def run_gui(path=None):
                 tv.selection_set(first)
                 tv.see(first)
 
+        def trash_dialog(self):
+            """ゴミ箱（4.4）：消した・外したもの（ノード・タスクの予定と実施の記録・IN/OUT_Navi の品・買い物リストの品）を
+            選んで戻す。今あるものは変えず、無いものだけ足す"""
+            self._close_data_windows()
+            tr = self.mm.view.get("trash") or []
+            w = tk.Toplevel(self.root)
+            w.title("ゴミ箱")
+            w.transient(self.root)
+            w.geometry("760x480")
+            ttk.Label(w, padding=(10, 8), text="消した・外したもの（新しい順）。選んで［戻す］を押すと元に戻します（今あるものは変えません）。"
+                                                "Ctrl・Shift＋クリックで複数選べます。").pack(anchor="w")
+            tf = ttk.Frame(w)
+            tf.pack(fill="both", expand=True, padx=10)
+            tv = ttk.Treeview(tf, columns=("t", "k", "n"), show="headings", selectmode="extended")
+            for c, txt, wd in (("t", "日時", 150), ("k", "種類", 220), ("n", "名前", 340)):
+                tv.heading(c, text=txt)
+                tv.column(c, width=wd, anchor="w")
+            sb = ttk.Scrollbar(tf, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            tv.pack(fill="both", expand=True)
+            for e in reversed(tr):
+                tv.insert("", "end", iid=e.get("id"), values=(str(e.get("at", "")).replace("T", " "),
+                                                             TRASH_NAMES.get(e.get("kind"), e.get("kind")), e.get("label", "")))
+            msg = tk.StringVar(value=f"{len(tr)} 件")
+
+            def do():
+                sel = set(tv.selection())
+                if not sel:
+                    return
+                self.checkpoint()
+                n_ = sum(trash_restore(self.mm, e) for e in tr if e.get("id") in sel)
+                self.touch()
+                self.redraw()
+                msg.set(f"{n_} 件を戻しました")
+                self.set_status(f"ゴミ箱から {n_} 件を戻しました")
+            bf = ttk.Frame(w, padding=8)
+            bf.pack(fill="x")
+            ttk.Label(bf, textvariable=msg).pack(side="left")
+            ttk.Button(bf, text="閉じる", command=w.destroy).pack(side="right")
+            ttk.Button(bf, text="戻す", command=do).pack(side="right", padx=6)
+            tv.bind("<Double-Button-1>", lambda ev: do())
+
         def _apply_restore(self, d, mode, parent=None):
-            """復元ポイントの中身 d を戻す。mode：all＝全部、shop＝IN/OUT_Navi、groc＝買い物リスト、fill＝IN/OUT_Navi の消えた入力を補う"""
+            """復元ポイントの中身 d から戻す（4.4：足すだけ）。
+            fill_all＝ノード・つながり・振り返り・IN/OUT_Navi・買い物リストなど、消えている・空になっているものを足す
+            （IN/OUT_Navi で状態・★が初期値に戻ってしまった品も補う）。fill＝IN/OUT_Navi の消えた入力だけを補う"""
             v = (d or {}).get("view") or {}
-            if mode in ("shop", "fill") and not isinstance(v.get("shopping"), dict):
+            if mode == "fill" and not isinstance(v.get("shopping"), dict):
                 messagebox.showinfo(APP_NAME, "この復元ポイントには IN/OUT_Navi のデータがありません", parent=parent)
                 return None
-            if mode == "groc" and not isinstance(v.get("groceries"), dict):
-                messagebox.showinfo(APP_NAME, "この復元ポイントには買い物リストのデータがありません", parent=parent)
-                return None
-            if mode == "all" and not d.get("nodes"):
-                messagebox.showinfo(APP_NAME, "このファイルはマップ全体のデータではありません（IN/OUT_Navi だけ戻せます）", parent=parent)
-                return None
-            names = {"all": "全部", "shop": "IN/OUT_Navi", "groc": "買い物リスト", "fill": "IN/OUT_Navi の消えた入力"}
-            if mode != "fill" and not messagebox.askyesno(APP_NAME, f"{names[mode]}をこの時点に戻しますか？\n"
-                                                                     "（今の中身は復元ポイント「戻す前」に残します）", parent=parent):
-                return None
             BG_WRITER.flush()
-            if self.path and os.path.exists(self.path):   # 戻す前の中身を残す（やり直せるように）
+            if self.path and os.path.exists(self.path):   # 戻す前の中身も残す
                 try:
                     with open(self.path, "rb") as f:
                         rp_write(self.path, "restore", f.read())
                 except OSError:
                     pass
             self._close_data_windows()
-            import copy as _copy
-            if mode == "all":
-                self.checkpoint()
-                self._restore(json.dumps(d, ensure_ascii=False))
-                for k in SHARED_VIEW_KEYS:   # 別画面のデータもこの時点に
-                    if k in v:
-                        self.mm.view[k] = _copy.deepcopy(v[k])
-                msg = "全部をこの時点に戻しました"
-            elif mode == "shop":
-                self.mm.view["shopping"] = shopping_upgrade(_copy.deepcopy(v["shopping"]))
-                msg = "IN/OUT_Navi をこの時点に戻しました"
-            elif mode == "groc":
-                self.mm.view["groceries"] = groceries_normalize(_copy.deepcopy(v["groceries"]))
-                msg = "買い物リストをこの時点に戻しました"
+            self.checkpoint()
+            n = 0
+            if mode == "fill_all":
+                import copy as _copy
+                for nd in d.get("nodes") or []:   # ノード：無いものは足す、あるものは消えた項目だけ戻す
+                    if not isinstance(nd, dict) or "id" not in nd:
+                        continue
+                    cur = self.mm.nodes.get(str(nd["id"]))
+                    if cur is None:
+                        self.mm.nodes[str(nd["id"])] = _copy.deepcopy(nd)
+                        n += 1
+                    else:
+                        n += fill_missing(cur, nd)
+                have = {(e.get("source"), e.get("target"), e.get("relation")) for e in self.mm.edges}
+                for e in d.get("edges") or []:
+                    k = (e.get("source"), e.get("target"), e.get("relation"))
+                    if k not in have and e.get("source") in self.mm.nodes and e.get("target") in self.mm.nodes:
+                        self.mm.edges.append(dict(e))
+                        n += 1
+                self.mm._edge_cache = None
+                for k, val in v.items():   # 別画面のデータ（振り返り・IN/OUT_Navi・買い物リスト・メモなど）
+                    if k in ("mn_guard", "style", "views", "positions"):
+                        continue
+                    if k not in self.mm.view or self.mm.view[k] in (None, "", [], {}):
+                        self.mm.view[k] = _copy.deepcopy(val)
+                        n += 1
+                    elif isinstance(val, (dict, list)) and type(self.mm.view[k]) is type(val):
+                        n += fill_missing(self.mm.view[k], val)
+                if isinstance(v.get("shopping"), dict):
+                    n += shopping_fill_lost(shopping_upgrade(self.mm.view.setdefault("shopping", {})), v["shopping"])
             else:
                 cur = self.mm.view.setdefault("shopping", {})
                 shopping_upgrade(cur)
                 n = shopping_fill_lost(cur, v["shopping"])
-                msg = (f"IN/OUT_Navi の {n} 品に、消えていた入力（状態・★・売却価格など）を戻しました" if n else
-                       "この復元ポイントからは、補える入力はありませんでした（別の時点を選んでください）")
-                if not n:
-                    return msg
+            if not n:
+                return "この時点からは、戻すもの（今は消えているもの）はありませんでした。別の時点を選んでください"
             self.dirty = True
             self.touch()
             self.redraw()
             self.on_transition("復元", defer=False)
+            msg = f"この時点から、消えていたもの {n} か所を戻しました（今の入力は変えていません）"
             self.set_status(msg)
             return msg
 
@@ -4419,6 +4790,7 @@ def run_gui(path=None):
             dl.add_command(label="取り込んだ勤務・休みをすべて削除…", command=self.delete_all_shifts)
             f.add_cascade(label="取り込んだデータの削除", menu=dl)
             f.add_separator()
+            f.add_command(label="ゴミ箱（消した・外したものを戻す）…", command=self.trash_dialog)
             f.add_command(label="復元ポイント（バックアップ）から戻す…", command=self.restore_dialog)
             f.add_command(label="自動バックアップのフォルダを開く", command=self.open_backup_folder)
             f.add_separator()
@@ -4943,13 +5315,21 @@ def run_gui(path=None):
             w.refresh = refresh
             refresh()
 
-        def untask(self, nid=None, snapshot=True):
+        def untask(self, nid=None, snapshot=True, ask=True):
             """タスク設定を解除：タスクリストから外し、カレンダーの予定・繰り返し・アラームも外す。
-            マップ（★）・タスクリスト・カレンダーのどこで外しても、この1か所で同じ状態にそろえる"""
+            マップ（★）・タスクリスト・カレンダーのどこで外しても、この1か所で同じ状態にそろえる。
+            【4.4】予定・実施の記録があるときは確認する。外す前の中身は必ずゴミ箱に残す（あとから戻せる）"""
             nid = nid or self.sel
             n = self.mm.nodes.get(nid) if nid else None
             if not n:
                 return
+            if ask and (has_sched(n) or n.get("done_dates") or n.get("repeat") or n.get("sessions") or
+                        n.get("status") == "done" or self._calendar_only(nid)):
+                if not messagebox.askyesno(APP_NAME, f"「{n.get('label', '')}」のタスク設定を外すと、カレンダーの予定・"
+                                                     "繰り返し・実施の記録も外れます。\n\n外しますか？"
+                                                     "（外した内容はゴミ箱に残り、ファイル ▸ ゴミ箱 から戻せます）",
+                                           parent=self.root):
+                    return
             if not (n.get("focus") or has_sched(n) or n.get("repeat") or n.get("alarm") or n.get("sessions")
                     or n.get("remind") or self._calendar_only(nid)):
                 self.set_status("このノードはタスク設定されていません")
@@ -4958,13 +5338,15 @@ def run_gui(path=None):
             if snapshot:
                 self.checkpoint()
             if self._calendar_only(nid) and not n.get("lecture_key") and not n.get("shift_code"):
-                lab = n.get("label", "")   # カレンダーだけにあるタスク → 消去
+                lab = n.get("label", "")   # カレンダーだけにあるタスク → 消去（ゴミ箱に残す）
+                trash_add(self.mm.view, "node", lab, subtree_snapshot(self.mm, nid))
                 self.mm.remove_node(nid)
                 self.sel = None
                 self.touch()
                 self.redraw()
                 self.set_status(f"「{lab}」はカレンダーだけにあったので消去しました（{ACC}+Z で元に戻せます）")
                 return
+            trash_add(self.mm.view, "task_setting", n.get("label", ""), {"node": dict(n)})   # 外す前の中身を残す
             n.pop("focus", None)
             clear_sched(n)
             for k in ("repeat", "exdates", "done_dates", "alarm", "snoozes", "iter", "remind", "sessions",
@@ -6071,8 +6453,7 @@ def run_gui(path=None):
             for seq in ("<Button-3>", "<Button-2>") if sys.platform == "darwin" else ("<Button-3>",):
                 t.bind(seq, list_menu)
             t.bind("<<TreeviewSelect>>", self.on_focus_select)
-            t.bind("<Delete>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
-            t.bind("<BackSpace>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
+            # （4.4）Delete・BackSpace でタスクを外さない：セルの中身を消して入力する（GridNav。エクセルと同じ）
             # エクセルと同じ操作：セルを選んで矢印・Tab・Enter で移動、文字を打つと入力（タスク名）、数字キーで 重・必・緊
             self.list_nav = GridNav(t, list(LIST_COLS), self._list_can_edit, self._list_begin, self._list_activate,
                                     lambda i: i in self.mm.nodes or i == "__newtask__",
@@ -6421,7 +6802,7 @@ def run_gui(path=None):
                 return
             self._q_dirty = False
             self.hide_qpop()
-            self.untask(n["id"])
+            self.untask(n["id"], ask=False)   # 上で確認した
 
         def _sec_natural(self, key):
             """欄の自然な高さ（見出し＋中身）"""
@@ -7611,8 +7992,13 @@ def run_gui(path=None):
             on = (not n.get("focus")) if force is None else force
             if bool(n.get("focus")) == on:
                 return
-            if not on:   # リストから外す＝タスク設定の解除（カレンダーからも外す）
-                self.untask(nid)
+            if not on:   # 【4.4】リストから外す＝タスクリストに出さないだけ（カレンダーの予定・実施の記録はそのまま）
+                self.checkpoint()
+                n.pop("focus", None)
+                n["updated"] = now()
+                self.touch()
+                self.select(nid)
+                self.set_status(f"「{n.get('label', '')}」をタスクリストから外しました（カレンダーの予定・実施の記録はそのまま）")
                 return
             self.checkpoint()
             if on:
@@ -7624,20 +8010,16 @@ def run_gui(path=None):
             self.set_status("「タスクリスト」に追加しました（左のリストに表示）" if on else "「タスクリスト」から外しました")
 
         def unfocus_done(self):
+            """【4.4】完了済みのタスクをタスクリストに出さないだけ（カレンダーの予定・実施の記録・★はそのまま）"""
             done = [n for n in self.mm.nodes.values() if n.get("focus") and n.get("status") == "done"]
             if not done:
                 return
-            oncal = sum(1 for n in done if has_sched(n))
-            if oncal and not messagebox.askokcancel(
-                    APP_NAME, f"完了済み {len(done)} 件のタスク設定を解除します。\n"
-                              f"このうち {oncal} 件はカレンダーからも外れます（達成率の集計からも外れます）。",
-                    parent=self.root):
-                return
             self.checkpoint()
             for n in done:
-                self.untask(n["id"], snapshot=False)
+                n.pop("focus", None)
+            self.touch()
             self.select(self.sel if self.sel in self.mm.nodes else None)
-            self.set_status(f"完了済み {len(done)} 件のタスク設定を解除しました（マップの★・カレンダーからも外しました）")
+            self.set_status(f"完了済み {len(done)} 件をタスクリストから外しました（カレンダーの予定・実施の記録はそのまま）")
 
         def _build_panel(self, p):
             self.v_label = tk.StringVar()
@@ -7749,9 +8131,9 @@ def run_gui(path=None):
             g(f"<{MOD}-o>", self.open)
             g(f"<{MOD}-n>", self.new)
             g(f"<{MOD}-e>", self.export_csv)
-            g(f"<{MOD}-z>", self.undo)
-            g(f"<{MOD}-y>", self.redo)
-            g(f"<{MOD}-Z>", self.redo)
+            g(f"<{MOD}-z>", lambda: self._undo_key(self.undo))   # 文字の入力中は、入力欄の元に戻すだけ（マップ全体は戻さない）
+            g(f"<{MOD}-y>", lambda: self._undo_key(self.redo))
+            g(f"<{MOD}-Z>", lambda: self._undo_key(self.redo))
             g(f"<{MOD}-l>", self.relayout)
             g(f"<{MOD}-D>", self.show_done_stats)   # Shift 付き
             g(f"<{MOD}-t>", self.tree_format)
@@ -7828,7 +8210,7 @@ def run_gui(path=None):
         def update_title(self):
             name = os.path.basename(self.path) if self.path else "無題"
             out_ = self.path and getattr(self, "data_dir", None) and not self.in_data_dir(self.path)
-            self.root.title(f"{APP_NAME} - {name}{' *' if self.dirty else ''}"
+            self.root.title(f"{APP_NAME} {APP_VERSION} - {name}{' *' if self.dirty else ''}"
                             + ("　⚠ Googleドライブのデータフォルダの外に保存中" if out_ else ""))
             self.refresh_filter_ui()
             self.v_layout.set(self.mm.layout_mode(self.style))
@@ -7899,6 +8281,16 @@ def run_gui(path=None):
             self.mm.view["style"] = self.style
             self.touch()
             self.select(self.sel if self.sel in self.mm.nodes else None)
+
+        def _undo_key(self, fn):
+            """Ctrl+Z：文字を入力している欄があるときはその欄だけ（マップ全体を前の状態に戻して入力を消さない）"""
+            try:
+                fw = self.root.focus_get()
+            except (KeyError, tk.TclError):
+                fw = None
+            if fw is not None and fw.winfo_class() in ("Entry", "TEntry", "Text", "TCombobox", "Spinbox", "TSpinbox"):
+                return
+            fn()
 
         def undo(self):
             self.cancel_edit()
@@ -12146,19 +12538,34 @@ def run_gui(path=None):
 
         # ---- 重要期限（免許更新など、絶対に忘れて困るもの） ----
         def _remind_state(self):
-            try:
-                with open(REMIND_STATE, encoding="utf-8") as fp:
-                    d = json.load(fp)
-                return d if isinstance(d, dict) else {}
-            except (OSError, ValueError):
-                return {}
+            """アラーム・重要期限・振り返りの知らせを出した記録（4.5 からデータファイルの view.remind_state。
+            以前この PC に置いていた ~/.mind_navi_reminders.json は1回だけ取り込む）"""
+            v = self.mm.view.get("remind_state")
+            if not isinstance(v, dict):
+                v = {}
+                if os.path.exists(REMIND_STATE):
+                    try:
+                        with open(REMIND_STATE, encoding="utf-8") as fp:
+                            old = json.load(fp)
+                        if isinstance(old, dict):
+                            v = old
+                            self.mm.view["remind_state"] = v
+                            self.dirty = True
+                            self.schedule_autosave(1500)
+                        os.replace(REMIND_STATE, REMIND_STATE + ".imported")   # 次からはデータファイルだけを使う
+                    except (OSError, ValueError):
+                        pass
+            return v
 
         def _save_remind_state(self, d):
-            try:
-                with open(REMIND_STATE, "w", encoding="utf-8") as fp:
-                    json.dump(d, fp, ensure_ascii=False, indent=1)
-            except OSError:
-                pass
+            sig = json.dumps(d, sort_keys=True, ensure_ascii=False, default=str)
+            if sig == json.dumps(self.mm.view.get("remind_state"), sort_keys=True, ensure_ascii=False, default=str) \
+                    and sig == getattr(self, "_remind_sig", None):
+                return   # 変わっていなければ保存しない
+            self._remind_sig = sig
+            self.mm.view["remind_state"] = d
+            self.dirty = True
+            self.schedule_autosave(1500)
 
         def _reminder_maps(self):
             """登録しているすべてのマップ（開いていないものはファイルから読む）: [(ボタン番号, パス, マップ)]"""
@@ -12499,17 +12906,18 @@ def run_gui(path=None):
                     self.select(self.sel)
                     self.set_status(f"{od.month}/{od.day} の回を削除しました")
                     return
-            if not keep_task:   # マップの★・タスクリストからも外す
-                self.untask(n["id"])
+            if not keep_task:   # マップの★・タスクリストからも外す（繰り返しの確認をしたときは重ねて聞かない）
+                self.untask(n["id"], ask=not (n.get("repeat") and od and self.style == "calendar"))
                 return
             self.checkpoint()
+            trash_add(self.mm.view, "task_setting", n.get("label", ""), {"node": dict(n)})   # 外す前の予定・実施の記録を残す
             clear_sched(n)
-            for k in ("repeat", "exdates", "done_dates"):
+            for k in ("repeat", "exdates"):   # 実施の記録（done_dates）は消さない（4.4）
                 n.pop(k, None)
             n["updated"] = now()
             self.touch()
             self.select(self.sel)
-            self.set_status("カレンダーの予定を外しました（タスクは残っています）")
+            self.set_status("カレンダーの予定を外しました（タスク・実施の記録は残っています。ゴミ箱から戻せます）")
 
         def schedule_dialog(self):
             """日時・繰り返し・アラームの編集：選択中のタスクの小窓で（目標・メモは従来の画面）"""
@@ -14705,9 +15113,16 @@ def run_gui(path=None):
                     return
                 self.unschedule()
                 return
+            n_ = self.mm.nodes.get(self.sel) or {}
+            k = len(self.mm.descendants(self.sel))
+            if (k or has_sched(n_) or n_.get("done_dates") or n_.get("status") == "done" or (n_.get("note") or "").strip()
+                    or has_memo(n_)) and not messagebox.askyesno(
+                        APP_NAME, f"「{n_.get('label', '')}」を削除しますか？" + (f"（下位 {k} 件も）" if k else "") +
+                        "\n\n消したものはゴミ箱に残り、ファイル ▸ ゴミ箱 から戻せます。", parent=self.root):
+                return
             self.checkpoint()
             par = self.mm.parent(self.sel)
-            k = len(self.mm.descendants(self.sel))
+            trash_add(self.mm.view, "node", n_.get("label", ""), subtree_snapshot(self.mm, self.sel))   # ゴミ箱に残す
             self.mm.remove_node(self.sel)
             self.touch()
             self.select(par)
@@ -16579,6 +16994,7 @@ def run_gui(path=None):
             return True
 
         def _after_load(self):
+            self.root.after(800, self._check_guard_on_open)   # 前回より大きく減っていないか（古い版などでの上書き）
             if not self.mm.view.get("idx_rank_v1"):   # 指標を「順位（1が最も高い）」に：以前の入力（6が高い）を読みかえる
                 ch_ = False
                 for n_ in self.mm.nodes.values():
@@ -16821,6 +17237,14 @@ def run_gui(path=None):
                 p = self.mm.export_graphml(base + ".graphml")
                 messagebox.showinfo(APP_NAME, f"出力しました:\n{p}")
 
+        def _open_paths(self):
+            """この起動で開いたデータファイル（.json）"""
+            ps = [self.path] if self.path else []
+            for s_ in self.slots:
+                if s_ and s_.get("doc") and s_.get("path") and s_["path"] not in ps:
+                    ps.append(s_["path"])
+            return [p_ for p_ in ps if p_.lower().endswith(".json") and os.path.exists(p_)]
+
         def on_close(self):
             self.commit_edit()
             self.apply_panel()
@@ -16839,6 +17263,13 @@ def run_gui(path=None):
                     self.switch_slot(start)
                 self.record_all_view_states()   # 展開状態・表示位置を記録して次回そのまま開く
                 self.save_settings()
+                for p_ in self._open_paths():   # 閉じたときのバックアップ（最後に保存した中身）
+                    try:
+                        with open(p_, "rb") as f_:
+                            raw_ = f_.read()
+                        BG_WRITER.put(lambda p_=p_, raw_=raw_: rp_write(p_, "close", raw_))
+                    except OSError:
+                        pass
                 BG_WRITER.flush()   # バックアップなどの書き込みが終わるのを待ってから終了
                 self.root.destroy()
 
@@ -18207,6 +18638,8 @@ def run_gui(path=None):
             for seq in ("<Return>", "<KP_Enter>"):
                 tree.bind(seq, self._on_return)
             tree.bind("<F2>", lambda ev: self.edit(keep=True))
+            for seq in ("<Delete>", "<BackSpace>"):   # セルの中身を消して入力（エクセルと同じ）。行・品・タスクは消さない
+                tree.bind(seq, self._on_clear)
             tree.bind("<Key>", self._on_key, add="+")
             tree.bind("<Configure>", lambda ev: tree.after_idle(self.show), add="+")
             tree.bind("<FocusOut>", lambda ev: tree.after(150, self._left_list), add="+")   # 画面を切り替えた → 並べ替え
@@ -18377,6 +18810,13 @@ def run_gui(path=None):
                 self.activate(self.cur[0], self.cur[1], init or "")
             return "break"
 
+        def _on_clear(self, ev=None):
+            """Delete・BackSpace：選んでいる文字の欄を空にして入力を始める（Enter で確定・Esc で取り消し）。
+            行（品・タスク）を消すことはしない（消すのは ✕・右クリックの「削除」だけ）"""
+            if self.cur and self.can_edit(*self.cur) and self.cur[0] != self.new_row:
+                self.begin(self.cur[0], self.cur[1], "")
+            return "break"
+
         def _on_key(self, ev):
             ch = getattr(ev, "char", "")
             if not self.cur or not ch or not ch.isprintable() or ev.state & 0x0004 or \
@@ -18487,7 +18927,6 @@ def run_gui(path=None):
             t.bind("<Button-1>", self.on_click)
             t.bind("<B1-Motion>", lambda ev: self._drag_motion(ev))
             t.bind("<ButtonRelease-1>", lambda ev: self._drag_release(ev))
-            t.bind("<Delete>", lambda ev: self.delete_sel())
             t.bind("<Double-Button-1>", self._on_double)
             self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
                                lambda i: i == self.NEW or self.item(i) is not None,
@@ -18861,7 +19300,10 @@ def run_gui(path=None):
             self.refresh()
 
         def clear_done(self):
-            """購入済みを片付ける（購入回数の記録は残る）"""
+            """購入済みを片付ける（購入回数の記録は残る。片付けた品はゴミ箱に残る）"""
+            for x in self.data["items"]:
+                if x.get("bought"):
+                    trash_add(self.app.mm.view, "groc", x.get("name", ""), {"item": x})
             self.data["items"] = [x for x in self.data["items"] if not x.get("bought")]
             self.save()
             self.refresh()
@@ -18869,6 +19311,9 @@ def run_gui(path=None):
         def delete_sel(self):
             ids = set(self._sel_items())
             if ids:
+                for x in self.data["items"]:
+                    if x["id"] in ids:   # ゴミ箱に残す
+                        trash_add(self.app.mm.view, "groc", x.get("name", ""), {"item": x})
                 self.data["items"] = [x for x in self.data["items"] if x["id"] not in ids]
                 self.save()
                 self.refresh()
@@ -18909,6 +19354,9 @@ def run_gui(path=None):
         def delete_staple(self):
             ids = set(self.stree.selection()) & {x["id"] for x in self.data["staples"]}
             if ids and messagebox.askyesno("買い物リスト", f"定番から {len(ids)} 品を外しますか？", parent=self.win):
+                for x in self.data["staples"]:
+                    if x["id"] in ids:
+                        trash_add(self.app.mm.view, "staple", x.get("name", ""), {"item": x})
                 self.data["staples"] = [x for x in self.data["staples"] if x["id"] not in ids]
                 self.save()
                 self.refresh()
@@ -19262,7 +19710,7 @@ def run_gui(path=None):
                                                                            ("value", True)])).pack(side="left", padx=(6, 0))
             ttk.Label(f, text="セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／ Enter・Tab で次の欄へ、↑↓←→ で移動／"
                               "行の入力の途中は並べ替えず、最後の欄まで入力するか、ほかの行を選ぶと並べ替え／ ★は1〜6 のキー、状態は W・B・H・C・S のキー、カテゴリはスペース／"
-                              " ✕・Delete で削除（元に戻す：Ctrl+Z）／ いちばん下の行で新しい品を追加",
+                              " ✕・右クリックで削除（ゴミ箱に入る。元に戻す：Ctrl+Z）／ Delete はセルの中身を消して入力／ いちばん下の行で新しい品を追加",
                       foreground="#868e96", wraplength=700, justify="left").pack(side="bottom", anchor="w", pady=(4, 0))
             tf = ttk.Frame(f)
             tf.pack(fill="both", expand=True, pady=(6, 0))
@@ -19290,7 +19738,6 @@ def run_gui(path=None):
             t.bind("<Button-1>", self.on_click)
             t.bind("<<TreeviewSelect>>", self._on_list_select)   # 選んだ品を分析マップで強調
             t.bind("<FocusOut>", lambda ev: self.win.after(60, self._tree_left), add="+")
-            t.bind("<Delete>", lambda ev: self.delete_sel())
             t.bind("<Double-Button-1>", self._on_double)            # ダブルクリック：今の文字のまま入力
             t.bind("<Button-3>" if sys.platform != "darwin" else "<Button-2>", self._row_menu)   # 右クリック：削除・状態
             t.bind("<B1-Motion>", self._drag_motion, add="+")       # 状態の欄から札へドラッグ
@@ -19606,6 +20053,9 @@ def run_gui(path=None):
                     next((r for r in reversed(rows[:k]) if r not in ids), None)
             batch = [(n_, x) for n_, x in enumerate(self.data["items"]) if x["id"] in ids]
             self._undo_del.append(batch)
+            for _n, x in batch:   # ゴミ箱に残す（ファイル ▸ ゴミ箱 から戻せる）
+                trash_add(self.app.mm.view, "shop", x.get("name", ""), {"item": x})
+            self.app._shop_deleted = getattr(self.app, "_shop_deleted", 0) + len(batch)   # 画面で消した数（保存の守りで戻さない）
             self.data["items"] = [x for x in self.data["items"] if x["id"] not in ids]
             self.save()
             self.refresh()
@@ -19618,6 +20068,7 @@ def run_gui(path=None):
                 self.lbl_msg.configure(text="元に戻す削除はありません")
                 return "break"
             batch = self._undo_del.pop()
+            self.app._shop_deleted = max(0, getattr(self.app, "_shop_deleted", 0) - len(batch))
             for n_, x in batch:
                 self.data["items"].insert(min(n_, len(self.data["items"])), x)
             self.save()

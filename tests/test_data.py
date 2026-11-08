@@ -159,7 +159,8 @@ class DataFileTest(unittest.TestCase):
         self.assertEqual((by["c"]["status"], by["d"]["status"]), ("hold", "wants"))
 
     def test_restore_points(self):
-        """復元ポイント：このPCとデータフォルダの両方に書き、種類ごとに数を保つ。保存の時期の判定"""
+        """バックアップ（4.5）：12種類。データフォルダとこの PC の両方に書く。PC ごとに分け、種類ごとに2つ（開閉は10、
+        バージョンアップの前は消さない）。中身が同じなら書かない。期間が過ぎた種類だけ書く。4.4 までのものも一覧に出て消えない"""
         import datetime
         saved = app.BACKUP_DIR
         app.BACKUP_DIR = os.path.join(self.tmp, "bk")
@@ -168,19 +169,55 @@ class DataFileTest(unittest.TestCase):
             os.makedirs(os.path.dirname(data_file))
             with open(data_file, "w", encoding="utf-8") as f:
                 f.write('{"nodes": [], "view": {}}')
-            self.assertEqual(set(app.rp_due(data_file)), {"hourly", "daily", "monthly"})
-            app.rp_write(data_file, "hourly", b'{"nodes": [1], "view": {}}')
-            app.rp_write(data_file, "daily", b'{"nodes": [1], "view": {}}')
-            app.rp_write(data_file, "monthly", b'{"nodes": [1], "view": {}}')
-            self.assertEqual(app.rp_due(data_file), [])
-            later = datetime.datetime.now() + datetime.timedelta(hours=2)
-            self.assertIn("hourly", app.rp_due(data_file, later))
+            kinds = [k for k, _n, _c, _p in app.RP_KINDS if k not in ("guard", "restore", "hourly", "daily", "monthly")]
+            self.assertEqual(kinds, ["m5", "m30", "h1", "open", "close", "d1", "d2", "d3", "w1", "mo1", "mo3", "y1", "upgrade"])
+            # 4.4 までの名前のバックアップ（消さずに一覧に出す）
             for d in app.rp_dirs(data_file):
-                self.assertEqual(len([f for f in os.listdir(d) if f.endswith(".json.gz")]), 3)
-            self.assertTrue(app.rp_dirs(data_file)[1].startswith(os.path.join(self.tmp, "drive", app.RP_SUBDIR)))
+                os.makedirs(d, exist_ok=True)
+                import gzip
+                with gzip.open(os.path.join(d, "daily_20261101-120000.json.gz"), "wb") as f:
+                    f.write(b'{"nodes": [9], "view": {}}')
+            t0 = datetime.datetime(2026, 11, 8, 9, 0, 0)
+            periodic = ["m5", "m30", "h1", "d1", "d2", "d3", "w1", "mo1", "mo3", "y1"]
+            self.assertEqual(app.rp_due(data_file, t0, pc="home"), periodic)
+            for k in periodic:
+                self.assertEqual(app.rp_write(data_file, k, b'{"nodes": [1]}', pc="home", now_=t0), 2)   # 両方の場所
+            self.assertEqual(app.rp_due(data_file, t0 + datetime.timedelta(minutes=1), pc="home"), [])
+            self.assertEqual(app.rp_due(data_file, t0 + datetime.timedelta(minutes=6), pc="home"), ["m5"])
+            self.assertEqual(app.rp_due(data_file, t0 + datetime.timedelta(days=2, minutes=1), pc="home"),
+                             ["m5", "m30", "h1", "d1", "d2"])
+            self.assertEqual(app.rp_due(data_file, t0, pc="school"), periodic)   # PC ごとに別
+            # 中身が同じなら書かない
+            self.assertEqual(app.rp_write(data_file, "m5", b'{"nodes": [1]}', pc="home",
+                                          now_=t0 + datetime.timedelta(minutes=6)), 0)
+            # 種類ごとに2つだけ残す（ほかの PC のものは消さない）
+            app.rp_write(data_file, "m5", b'{"nodes": [1]}', pc="school", now_=t0)
+            for i in range(2, 6):
+                app.rp_write(data_file, "m5", ('{"nodes": [%d]}' % i).encode(), pc="home",
+                             now_=t0 + datetime.timedelta(minutes=5 * i))
             lst = app.rp_list(data_file)
-            self.assertEqual(len(lst), 3)   # 両方の場所にあっても1つに
-            self.assertEqual(app.read_data_file(lst[0][2])["nodes"], [1])
+            home_m5 = [x for x in lst if x[1] == "m5" and x[3] == "home"]
+            self.assertEqual([app.read_data_file(x[2])["nodes"] for x in home_m5], [[5], [4]])
+            self.assertEqual(len([x for x in lst if x[1] == "m5" and x[3] == "school"]), 1)
+            self.assertEqual([x[1] for x in lst if x[0] == datetime.datetime(2026, 11, 1, 12)], ["daily"])
+            for d in app.rp_dirs(data_file):   # 両方の場所に同じ数
+                self.assertTrue(os.path.exists(os.path.join(d, "daily_20261101-120000.json.gz")))
+                self.assertEqual(len([f for f in os.listdir(d) if "_home_" in f and f.startswith("m5_")]), 2)
+            self.assertTrue(app.rp_dirs(data_file)[1].startswith(os.path.join(self.tmp, "drive", app.RP_SUBDIR)))
+            # 開いたとき：前の版で保存したファイルは「バージョンアップの前」に残し、消さない
+            old = json.dumps({"nodes": [7], "view": {"mn_guard": {"ver": "4.2"}}}).encode()
+            app.rp_on_open(data_file, old)
+            app.rp_on_open(data_file, old)
+            up = [x for x in app.rp_list(data_file) if x[1] == "upgrade"]
+            self.assertEqual([(x[4], app.read_data_file(x[2])["nodes"]) for x in up], [("4.2", [7])])
+            app.rp_on_open(data_file, json.dumps({"nodes": [8], "view": {"mn_guard": {"ver": app.APP_VERSION}}}).encode())
+            self.assertEqual(len([x for x in app.rp_list(data_file) if x[1] == "upgrade"]), 1)   # 今の版なら作らない
+            for i in range(12):   # 開いたときは10回分
+                app.rp_write(data_file, "open", ('{"n": %d}' % i).encode(), pc="home",
+                             now_=t0 + datetime.timedelta(seconds=i))
+            self.assertEqual(len([x for x in app.rp_list(data_file) if x[1] == "open" and x[3] == "home"]), 10)
+            self.assertGreater(app.ver_tuple("4.10"), app.ver_tuple("4.9"))
+            self.assertNotIn("_", app.rp_pc_name())
         finally:
             app.BACKUP_DIR = saved
 
@@ -188,6 +225,106 @@ class DataFileTest(unittest.TestCase):
         d = {"nodes": [{}] * 3, "view": {"shopping": {"items": [{"status": "buy"}, {"status": "hold"}, {"life": 6}]},
                                          "groceries": {"items": [{}, {}]}}}
         self.assertEqual(app.data_score(d), {"nodes": 3, "shop": 3, "shop_info": 3, "groc": 2})
+
+    def test_app_version_matches_header(self):
+        with open(APP, encoding="utf-8") as f:
+            head = f.readline() + f.readline() + f.readline()
+        self.assertIn(f"VERSION {app.APP_VERSION} ", head)
+
+    def test_merge3_two_pcs_keep_both(self):
+        """2台の PC：学校で書いた振り返り・完了・IN/OUT_Navi と、家で変えた内容がどちらも残る（上書きで消えない）"""
+        base = {"nodes": [{"id": "t1", "label": "論文", "status": "todo", "done_dates": []},
+                          {"id": "t2", "label": "運動", "status": "todo"}],
+                "edges": [{"source": "r", "target": "t1"}],
+                "view": {"reviews": {"D:2026-11-06": "6日の振り返り"},
+                         "shopping": {"v": 4, "items": [{"id": "a", "name": "本", "status": "wants", "life": 4}]}}}
+        import copy
+        school = copy.deepcopy(base)   # ほかの PC（ファイルに保存済み）
+        school["view"]["reviews"]["D:2026-11-07"] = "7日の振り返り（学校で書いた）"
+        school["nodes"][0]["status"] = "done"
+        school["view"]["shopping"]["items"][0].update(status="hold", life=6)
+        school["view"]["shopping"]["items"].append({"id": "b", "name": "靴", "status": "buy"})
+        home = copy.deepcopy(base)     # 開いたままの PC
+        home["view"]["reviews"]["D:2026-11-08"] = "8日の振り返り（家で書いた）"
+        home["nodes"][1]["label"] = "運動（30分）"
+        home["nodes"].append({"id": "t3", "label": "新しいタスク", "status": "todo"})
+        m = app.merge3(base, home, school)
+        self.assertEqual(set(m["view"]["reviews"]), {"D:2026-11-06", "D:2026-11-07", "D:2026-11-08"})
+        nodes = {n["id"]: n for n in m["nodes"]}
+        self.assertEqual(nodes["t1"]["status"], "done")
+        self.assertEqual(nodes["t2"]["label"], "運動（30分）")
+        self.assertIn("t3", nodes)
+        items = {x["id"]: x for x in m["view"]["shopping"]["items"]}
+        self.assertEqual((items["a"]["status"], items["a"]["life"]), ("hold", 6))
+        self.assertIn("b", items)
+        self.assertEqual(m["edges"], base["edges"])
+
+    def test_merge3_deletions_and_conflicts(self):
+        base = {"items": [{"id": "x", "v": 1}, {"id": "y", "v": 1}], "s": "a", "tags": ["p", "q"]}
+        ours = {"items": [{"id": "x", "v": 1}], "s": "b", "tags": ["p", "q", "r"]}          # y を消した
+        theirs = {"items": [{"id": "x", "v": 2}, {"id": "y", "v": 1}], "s": "c", "tags": ["q"]}  # p を外した
+        m = app.merge3(base, ours, theirs)
+        self.assertEqual(m["items"], [{"id": "x", "v": 2}])   # y はこの PC で消した。x はほかの変更を使う
+        self.assertEqual(m["s"], "b")                          # 両方が変えた → この PC
+        self.assertEqual(m["tags"], ["q", "r"])
+        changed = {"items": [{"id": "x", "v": 1}, {"id": "y", "v": 5}]}   # 消した品をほかで変えていた → 残す
+        self.assertEqual(app.merge3(base, {"items": [{"id": "x", "v": 1}]}, changed)["items"],
+                         [{"id": "x", "v": 1}, {"id": "y", "v": 5}])
+        self.assertEqual(app.merge3(base, base, base), base)
+
+    def test_fill_missing_only_adds(self):
+        """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
+        cur = {"a": "今", "b": "", "items": [{"id": "x", "v": "今", "memo": ""}], "tags": ["p"], "new": 1}
+        old = {"a": "昔", "b": "昔", "c": "昔", "items": [{"id": "x", "v": "昔", "memo": "メモ"}, {"id": "y", "v": 1}],
+               "tags": ["p", "q"]}
+        n = app.fill_missing(cur, old)
+        self.assertGreater(n, 0)
+        self.assertEqual(cur["a"], "今")            # 今の入力は変えない
+        self.assertEqual(cur["b"], "昔")            # 空になったものは戻す
+        self.assertEqual(cur["c"], "昔")            # 消えた項目は戻す
+        self.assertEqual(cur["new"], 1)             # 今だけにある項目は消さない
+        self.assertEqual(cur["items"][0], {"id": "x", "v": "今", "memo": "メモ"})
+        self.assertEqual([x["id"] for x in cur["items"]], ["x", "y"])
+        self.assertEqual(cur["tags"], ["p", "q"])
+        import copy
+        snap = copy.deepcopy(cur)
+        self.assertEqual(app.fill_missing(cur, old), 0)
+        self.assertEqual(cur, snap)
+
+    def test_trash_keeps_and_restores_without_overwriting(self):
+        """ゴミ箱：消したノード（下位も）・外したタスクの予定と実施の記録・品を戻せる。今の入力は変えない"""
+        mm = app.MindNavi()
+        g = mm.add_node("目標")
+        t = mm.add_node("タスク", parent=g, sched="2026-11-01", done_dates=["2026-11-01"])
+        c = mm.add_node("下位", parent=t)
+        snap = app.subtree_snapshot(mm, t)
+        self.assertEqual({n["id"] for n in snap["nodes"]}, {t, c})
+        app.trash_add(mm.view, "node", "タスク", snap)
+        for k in (t, c):
+            del mm.nodes[k]
+        mm.edges = [e for e in mm.edges if e["target"] not in (t, c) and e["source"] not in (t, c)]
+        self.assertEqual(app.trash_restore(mm, mm.view["trash"][-1]), 2)
+        self.assertEqual(mm.nodes[t]["done_dates"], ["2026-11-01"])
+        self.assertTrue(any(e["source"] == g and e["target"] == t for e in mm.edges))
+        self.assertEqual(app.trash_restore(mm, mm.view["trash"][-1]), 0)   # 2回目は何も変わらない
+        # タスクの設定を外した → 戻すと予定・実施の記録だけ戻り、そのあと変えた名前は変わらない
+        app.trash_add(mm.view, "task_setting", "タスク", {"node": dict(mm.nodes[t])})
+        mm.nodes[t].pop("sched")
+        mm.nodes[t]["done_dates"] = []
+        mm.nodes[t]["label"] = "新しい名前"
+        app.trash_restore(mm, mm.view["trash"][-1])
+        self.assertEqual(mm.nodes[t]["sched"], "2026-11-01")
+        self.assertEqual(mm.nodes[t]["done_dates"], ["2026-11-01"])
+        self.assertEqual(mm.nodes[t]["label"], "新しい名前")
+        # IN/OUT_Navi の品
+        mm.view["shopping"] = {"items": []}
+        app.trash_add(mm.view, "shop", "本", {"item": {"id": "s1", "name": "本"}})
+        app.trash_restore(mm, mm.view["trash"][-1])
+        app.trash_restore(mm, mm.view["trash"][-1])
+        self.assertEqual(mm.view["shopping"]["items"], [{"id": "s1", "name": "本"}])
+        # ゴミ箱はデータファイルに入って残る
+        d = json.loads(json.dumps(mm.to_dict()))
+        self.assertEqual(len(d["view"]["trash"]), 3)
 
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
