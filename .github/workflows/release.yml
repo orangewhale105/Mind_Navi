@@ -1,11 +1,17 @@
 # Mind_Navi 配布ファイルの作成（PC版 mind_navi.py ＋ Android版 APK を Releases ページに置く）
 # 最終更新日 2026-11-08
-# 使い方：GitHub の「Actions」→「配布ファイルを作る」→「Run workflow」。
+# 使い方：main に取り込む（Merge）と、PC版・Android版のプログラムが変わっていれば自動で作る。
+#         手で作るときは GitHub の「Actions」→「配布ファイルを作る」→「Run workflow」。
 # 署名の鍵はリポジトリの android/MindNaviShopping/signing/ にある（2026-11-08 決定。docs/SPEC.md 11.4）。
 name: 配布ファイルを作る
 
 on:
   workflow_dispatch:
+  push:   # 取り込み（Merge）でプログラムが変わったら自動で作る（作り忘れを防ぐ）
+    branches: [main]
+    paths:
+      - desktop/mind_navi.py
+      - android/MindNaviShopping/**
 
 permissions:
   contents: write
