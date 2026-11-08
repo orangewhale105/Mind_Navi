@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.8  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.9  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.8。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.9。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -57,12 +57,13 @@ import gzip
 import sys
 import threading
 import queue
+import types
 import uuid
 import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "4.8"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "4.9"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2098,6 +2099,7 @@ NEW_TASK_MIN = 30   # 新しく置くタスクの実施時間（分）の既定
 SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries", "remind_state")   # 別画面のデータ
 # 元に戻す（Ctrl+Z）で前に戻さない記入：別画面のデータ・コンパス・デイリーコンパス・ゴミ箱など（4.6）
 SELL_RING = "#2b8a3e"   # IN/OUT_Navi マップ：売却金額の輪
+LIST_TREE_STYLES = ("Focus.Treeview", "Gro.Treeview", "Shop.Treeview")   # GridNav のリスト（選んだ行を塗りつぶさない）
 TRIAL_RED = "#e03131"   # トライアルの実施の印（濃さ＝回数）
 CROWN_COLORS = (("#ffe066", "#f08c00"), ("#fcc419", "#e67700"), ("#ff922b", "#d9480f"))   # 王冠の数 1・2・3〜
 
@@ -3088,7 +3090,10 @@ SHORTCUTS = [   # ("§ 見出し", None) は区切り。メニューと同じ並
     ("つながり ▸", "関連リンク（L）/ 親を付け替え（P）"),
     ("S / D", "開始日 / 期限を設定"),
     ("§ 展開・折りたたみ・絞り込み（表示 メニュー・右クリック）", None),
-    ("C / −ボタン・数字ボタン", "このノードの下位を折りたたむ / 展開（数字は隠れている件数）"),
+    ("O / C", "選んだノードの子・孫をすべて展開 / すべて折りたたむ（右クリックのいちばん上にも）"),
+    ("−ボタン・数字ボタン", "このノードの下位を折りたたむ / 展開（数字は隠れている件数）"),
+    ("マップでホイール", "拡大・縮小（マウスの位置を中心に）。Ctrl＋ホイールで上下、Shift＋ホイールで左右に動かす"),
+    ("マップで ↑ / ↓（ノードを選んで）", "同じ階層の上下のノードと位置を入れかえる"),
     ("展開・折りたたみ ▸ このツリー", "子・孫をすべて展開 / このツリーだけ表示 / このツリーを非表示 / マインドマップで確認"),
     ("すべてのツリーを折りたたむ", "2段目まで表示。展開ボタンで折りたたむ前の開き具合に戻る"),
     (f"Shift+C / 上部 1〜3・全（{ALT}+Shift+1〜3, 0）", "すべて展開 / 表示する段数"),
@@ -3211,6 +3216,61 @@ def migrate_old_local_files():
                 shutil.copy2(src, new)
         except OSError:
             pass
+
+
+def start_win_mouse_hook(q):
+    """【4.9】Windows：マウスの「戻る・進む」ボタン（XButton。SlimBlade の上のボタンなど）を受け取る。
+    Windows 版の tkinter（Tk 8.6）はこのボタンを受け取れないので、Windows のマウスの仕組み（低レベルフック）で
+    受け取り、q に 8（戻る）・9（進む）を入れる（Mind_Navi が前面にあるときだけ）。失敗しても何もしない"""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes as wt
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    except Exception:
+        return False
+    WH_MOUSE_LL, WM_XBUTTONDOWN = 14, 0x020B
+
+    class MSLL(ctypes.Structure):
+        _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD), ("time", wt.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t)]
+    LRESULT = ctypes.c_ssize_t
+    PROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+    user32.CallNextHookEx.argtypes = [wt.HHOOK, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+    user32.CallNextHookEx.restype = LRESULT
+    user32.SetWindowsHookExW.argtypes = [ctypes.c_int, PROC, wt.HINSTANCE, wt.DWORD]
+    user32.SetWindowsHookExW.restype = wt.HHOOK
+    user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+    kernel32.GetModuleHandleW.restype = wt.HMODULE
+    pid = os.getpid()
+
+    def proc(code, wparam, lparam):
+        try:
+            if code == 0 and wparam == WM_XBUTTONDOWN:
+                info = ctypes.cast(lparam, ctypes.POINTER(MSLL)).contents
+                xb = (info.mouseData >> 16) & 0xFFFF   # 1＝戻る、2＝進む
+                p_ = wt.DWORD()
+                user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(p_))
+                if p_.value == pid and xb in (1, 2):
+                    q.put(7 + xb)
+        except Exception:
+            pass
+        return user32.CallNextHookEx(None, code, wparam, lparam)
+    cb = PROC(proc)
+
+    def run():
+        h = user32.SetWindowsHookExW(WH_MOUSE_LL, cb, kernel32.GetModuleHandleW(None), 0)
+        if not h:
+            return
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+    th = threading.Thread(target=run, daemon=True)
+    th._cb = cb   # 呼び戻しの関数を消さないように持っておく
+    th.start()
+    return True
 
 
 LOCK_PATH = os.path.join(os.path.expanduser("~"), ".mind_navi.lock")
@@ -3379,6 +3439,15 @@ def run_gui(path=None):
     ttk.Treeview.tag_configure = _themed_tag_configure
     ttk.Treeview.tag_config = _themed_tag_configure
 
+    def list_styles_nofill(st, fg=None):
+        """【4.9】エクセルと同じ操作のリスト：選んだ行を塗りつぶさない（選んだセルの枠と行の下線で示す）。文字はふつうの色"""
+        fg = fg or (DESIGNS.get(THEME.get("key") or "office") or {}).get("fg") or "#212529"
+        for name_ in LIST_TREE_STYLES:
+            try:
+                st.map(name_, background=[("selected", "")], foreground=[("selected", fg)])
+            except tk.TclError:
+                pass
+
     def apply_design(root, key, base_theme=None):
         """デザインスタイルを切り替え：ttk の見た目・既定の色・開いているすべての画面の色を、その場で変える"""
         cfg = DESIGNS.get(key) or DESIGNS["office"]
@@ -3444,6 +3513,7 @@ def run_gui(path=None):
                     root.option_add(pat, val)
             except tk.TclError:
                 pass
+        list_styles_nofill(st)
 
     _TK_COLOR_OPTS = ("background", "foreground", "activebackground", "activeforeground", "highlightbackground",
                       "highlightcolor", "insertbackground", "selectbackground", "selectforeground", "troughcolor",
@@ -3778,6 +3848,7 @@ def run_gui(path=None):
             self.compass_mon = None   # コンパスで見ている週（None＝今週／カレンダーでは表示中の週）
             self.v_slot = tk.IntVar(value=self.cur)
             self._base_theme = ttk.Style(root).theme_use()
+            list_styles_nofill(ttk.Style(root))   # 標準のデザインでも、リストの選んだ行を塗りつぶさない
             self._build()
             if getattr(self, "design", "office") != "office":   # デザインスタイル（前回選んだもの）
                 apply_design(root, self.design, self._base_theme)
@@ -5311,6 +5382,13 @@ def run_gui(path=None):
         def _fill_node_menu(self, menu, edit_items=True):
             """タスク（ノード）のメニュー。右クリックとメニューバー「タスク」で共通。
               タスクの設定… ／ ★ タスクリスト ／ ✓ 完了 ／ タスク設定 ▸ ｜（追加・名前）｜ 整理 ▸ ／ 展開・折りたたみ ▸ ／ つながり ▸ ｜ 削除"""
+            # 【4.9】展開・折りたたみをいちばん上に（O＝子・孫をすべて展開、C＝子・孫をすべて折りたたむ）
+            menu.add_command(label="子・孫をすべて展開", accelerator="O", command=lambda: self.expand_subtree())
+            menu.add_command(label="子・孫をすべて折りたたむ", accelerator="C", command=lambda: self.collapse_subtree())
+            tm = tk.Menu(menu, tearoff=0)
+            self._fill_tree_menu(tm, node=True)
+            menu.add_cascade(label="展開・折りたたみ（ほか）", menu=tm)
+            menu.add_separator()
             menu.add_command(label="カレンダーで表示", accelerator=f"{ACC}+J", command=self.jump_view)
             menu.add_separator()
             menu.add_command(label="タスクリストに送る", accelerator="F", command=lambda: self.toggle_focus(force=True))
@@ -5352,9 +5430,6 @@ def run_gui(path=None):
             cm_.add_command(label="色を解除（下位も）", command=lambda: self.set_color(None))
             og.add_cascade(label="色", menu=cm_)
             menu.add_cascade(label="整理（状態・カテゴリ・種類・色）", menu=og)
-            tm = tk.Menu(menu, tearoff=0)
-            self._fill_tree_menu(tm, node=True)
-            menu.add_cascade(label="展開・折りたたみ", menu=tm)
             lk = tk.Menu(menu, tearoff=0)
             lk.add_command(label="関連リンクを引く…", accelerator="L", command=lambda: self.set_mode("link"))
             lk.add_command(label="親を付け替える…", accelerator="P", command=lambda: self.set_mode("parent"))
@@ -5489,6 +5564,19 @@ def run_gui(path=None):
             self.touch()
             self.select(nid)
             self.set_status(f"「{self.mm.nodes[nid].get('label', '')}」の下位をすべて展開しました")
+
+        def collapse_subtree(self, nid=None):
+            """選んだノードの子・孫…をすべて折りたたむ（下位を持つノードはすべて閉じる。4.9）"""
+            nid = nid or self.sel
+            if not nid or nid not in self.mm.nodes or not self.mm.children(nid):
+                return
+            self.checkpoint()
+            for k in {nid} | self.mm.descendants(nid):
+                if self.mm.children(k):
+                    self.mm.nodes[k]["collapsed"] = True
+            self.touch()
+            self.select(nid)
+            self.set_status(f"「{self.mm.nodes[nid].get('label', '')}」の下位をすべて折りたたみました（O で子・孫をすべて展開）")
 
         # ---- 絞り込み（未完了・優先度）：条件に合うタスクとその上位だけを表示 ----
         def set_filter(self, undone=None, pri=None, toggle_pri=None, clear=False):
@@ -5699,8 +5787,24 @@ def run_gui(path=None):
         # ---- マウスの追加ボタン（ケンジントン SlimBlade の右上＝カレンダー、左上＝マインドマップ） ----
         def _mouse_defaults(self):
             if sys.platform.startswith("win"):
-                return {"cal": 4, "map": 2}   # Windows：戻るボタン＝4、中ボタン＝2
+                return {"cal": 8, "map": 2}   # Windows：戻るボタン＝8（4.9 から受け取れる）、中ボタン＝2
             return {"cal": 8, "map": 2}
+
+        def _poll_xbuttons(self):
+            """Windows のマウスの戻る・進むボタン（8・9）を、ふつうのボタンと同じに扱う"""
+            try:
+                while True:
+                    num = self._xbtn_q.get_nowait()
+                    cb = getattr(self, "_learn_cb", None)
+                    if getattr(self, "_learning_btn", None) and cb:
+                        cb(types.SimpleNamespace(num=num))   # 割り当ての画面で覚えさせている
+                    else:
+                        self.on_any_button(types.SimpleNamespace(num=num))
+            except queue.Empty:
+                pass
+            except tk.TclError:
+                return
+            self.root.after(40, self._poll_xbuttons)
 
         def on_any_button(self, ev):
             """どの画面でも：割り当てたボタンでカレンダー（週）／マインドマップへ。タスクを選んでいればそのタスクの場所へ"""
@@ -6040,6 +6144,7 @@ def run_gui(path=None):
                 self._learning_btn = False
                 return "break"
             box.bind("<Button>", got)
+            self._learn_cb = got   # Windows の戻る・進むボタンもここで覚えさせる（4.9）
             for i, (k, lbl) in enumerate((("cal", "右上：カレンダー（週）"), ("map", "左上：マインドマップ")), 2):
                 ttk.Label(f, text=lbl).grid(row=i, column=0, sticky="w")
                 ttk.Label(f, textvariable=v[k], width=10).grid(row=i, column=1, sticky="w")
@@ -6348,9 +6453,7 @@ def run_gui(path=None):
             n["day_target"] = times
             n.pop("iter", None)
             n.pop("remind", None)
-            if not was:
-                n.pop("done_dates", None)
-                n.pop("day_counts", None)
+            if not was:   # 実施の記録（done_dates・day_counts）は消さない（4.9）
                 n["repeat"] = {"freq": "daily", "interval": 1}
                 n["sched_date"] = (_date(n.get("sched_date")) or datetime.date.today()).isoformat()
             n.pop("sched_start", None)
@@ -6411,13 +6514,13 @@ def run_gui(path=None):
                 self._sync_menu_vars()
                 return
             if n.get("multi") and freq != "multi":   # 複数回数実施をやめる
-                for k in ("multi", "day_target", "day_counts"):
+                for k in ("multi", "day_target"):   # 実施の回数の記録（day_counts）は消さない（4.9）
                     n.pop(k, None)
             if freq in ("once_timed", "once_day"):
                 self.checkpoint()
                 n["kind"] = "task"
                 n["focus"] = True   # タスクに設定＝タスクリスト
-                for k in ("repeat", "exdates", "done_dates", "iter"):
+                for k in ("repeat", "exdates", "iter"):   # 実施の記録（done_dates）は消さない（4.9）
                     n.pop(k, None)
                 day = _date(n.get("sched_date")) or datetime.date.today()
                 n["sched_date"] = day.isoformat()
@@ -6470,7 +6573,7 @@ def run_gui(path=None):
                 return
             self.checkpoint()
             n["kind"] = "task"
-            for k in ("repeat", "exdates", "done_dates", "iter"):
+            for k in ("repeat", "exdates", "iter"):   # 実施の記録（done_dates）は消さない（4.9）
                 n.pop(k, None)
             if untimed(n):
                 n.pop("sched_date", None)
@@ -6482,8 +6585,9 @@ def run_gui(path=None):
         def _fill_tree_menu(self, m, node=True, view=False):
             """展開・折りたたみ。node=True なら先頭に「このツリー」の操作、続いて全体の操作"""
             if node:
-                m.add_command(label="下位を折りたたむ / 展開", accelerator="C", command=self.toggle_collapse)
-                m.add_command(label="子・孫をすべて展開", command=lambda: self.expand_subtree())
+                m.add_command(label="子・孫をすべて展開", accelerator="O", command=lambda: self.expand_subtree())
+                m.add_command(label="子・孫をすべて折りたたむ", accelerator="C", command=lambda: self.collapse_subtree())
+                m.add_command(label="下位を折りたたむ / 展開（1段）", command=self.toggle_collapse)
                 m.add_command(label="このツリーだけを表示（ほかは折りたたむ）", command=lambda: self.only_this_tree())
                 m.add_command(label="このツリーを非表示（非表示リストへ）", command=lambda: self.hide_node())
                 m.add_command(label="マインドマップで確認（上位をたどって展開）", command=lambda: self.show_in_mindmap())
@@ -7844,22 +7948,19 @@ def run_gui(path=None):
                     n["sched_date"] = d.isoformat()
                 self.make_multi(n, times)
             elif n.get("multi"):   # 複数回数実施をやめる
-                for k in ("multi", "day_target", "day_counts"):
+                for k in ("multi", "day_target"):   # 実施の回数の記録（day_counts）は消さない（4.9）
                     n.pop(k, None)
             if freq and freq != "multi" and freq != self._freq_of(n):
                 n["focus"] = True
                 if freq in ("once_timed", "once_day"):
-                    for k in ("repeat", "exdates", "done_dates", "iter"):
+                    for k in ("repeat", "exdates", "iter"):   # 実施の記録（done_dates）は消さない（4.9）
                         n.pop(k, None)
                 else:
                     base = d or _date(n.get("sched_date")) or datetime.date.today()
                     rp = {"freq": "daily" if freq == "iter" else freq, "interval": 1}
                     if freq == "weekly":
                         rp["byweekday"] = [base.weekday()]
-                    old = (n.get("repeat") or {}).get("freq")
-                    if old != rp["freq"]:
-                        n.pop("done_dates", None)
-                    n["repeat"] = rp
+                    n["repeat"] = rp   # 繰り返しを変えても実施の記録（done_dates）は消さない（4.9）
                     if freq == "iter":
                         n["iter"] = True
                     else:
@@ -8399,7 +8500,8 @@ def run_gui(path=None):
             k("<Delete>", self.delete)
             k("<BackSpace>", self.delete)
             k("<Escape>", lambda: self.set_mode(None))
-            k("<Key-c>", self.toggle_collapse)
+            k("<Key-c>", lambda: self.collapse_subtree())   # 子・孫をすべて折りたたむ（4.9）
+            k("<Key-o>", lambda: self.expand_subtree())     # 子・孫をすべて展開（4.9）
             k("<Key-f>", self.toggle_task_star)
             k("<Key-w>", self.schedule_dialog)
             k("<Key-a>", lambda: self.alarm_dialog())
@@ -8440,6 +8542,9 @@ def run_gui(path=None):
                 g(seq_, lambda: self.untask(self.sel) if self.sel in self.mm.nodes else None)
             g(f"<{MOD}-m>", lambda: self.memo_dialog())
             r.bind_all("<Button>", self.on_any_button, add="+")
+            self._xbtn_q = queue.Queue()   # Windows：マウスの戻る・進むボタン（tkinter では受け取れない。4.9）
+            if start_win_mouse_hook(self._xbtn_q):
+                self.root.after(200, self._poll_xbuttons)
             r.bind_all("<Key>", lambda ev: setattr(self, "_last_key", time.monotonic()), add="+")   # 入力中は自動保存を待つ
             r.bind("<FocusIn>", lambda ev: self.adopt_outside_groceries() if ev.widget is r else None, add="+")   # マウスの追加ボタン → カレンダー／マインドマップ
             g(f"<{MOD}-p>", lambda: self.toggle_remind_pin())   # 重要期限：たたんでも常に表示
@@ -8909,10 +9014,13 @@ def run_gui(path=None):
                 self._cal_clamp()
                 self.redraw()
                 return
-            if ev.state & 0x0004 or ev.state & 0x0008:   # Ctrl / Cmd
+            if self.style not in TABLE_STYLES and not (ev.state & 0x0001 or ev.state & 0x0004 or ev.state & 0x0008):
+                self.zoom(1.15 if step > 0 else 1 / 1.15, ev.x, ev.y)   # 【4.9】マップ：ホイールで拡大・縮小（マウスの位置を中心に）
+                return
+            if (ev.state & 0x0004 or ev.state & 0x0008) and self.style in TABLE_STYLES:   # Ctrl / Cmd
                 self.zoom(1.15 if step > 0 else 1 / 1.15, ev.x, ev.y)
                 return
-            if ev.state & 0x0001:   # Shift → 横
+            if ev.state & 0x0001:   # Shift → 横（マップは Ctrl で上下、Shift で左右に動かす）
                 self.ox += step * 40
             else:
                 self.oy += step * 40
@@ -9829,7 +9937,7 @@ def run_gui(path=None):
                 return
             on = (not n.get("reusable")) if on is None else on
             if on and n.get("repeat"):   # 毎日・毎週などの繰り返しはそのまま（各回の実施も回数に数える）
-                for k in ("iter", "multi", "day_target", "day_counts", "remind"):
+                for k in ("iter", "multi", "day_target", "remind"):   # 実施の回数の記録（day_counts）は消さない（4.9）
                     n.pop(k, None)
                 n.update(reusable=True, focus=True, kind="task", status="todo")
                 n["updated"] = now()
@@ -9841,8 +9949,8 @@ def run_gui(path=None):
                         "id": uuid.uuid4().hex[:6], "date": n["sched_date"],
                         "start": _fmt_hm(sc[1]) if sc else None, "end": _fmt_hm(sc[2]) if sc else None,
                         "done": n.get("status") == "done"})
-                for k in ("sched_date", "sched_start", "sched_end", "repeat", "exdates", "done_dates", "iter",
-                          "multi", "day_target", "day_counts", "remind"):
+                for k in ("sched_date", "sched_start", "sched_end", "repeat", "exdates", "iter",
+                          "multi", "day_target", "remind"):   # 実施の記録（done_dates・day_counts）は消さない（4.9）
                     n.pop(k, None)
                 n["reusable"] = True
                 n["focus"] = True
@@ -10540,7 +10648,7 @@ def run_gui(path=None):
             if n.get("sched_date"):
                 for d in occurrences(n, d0, d1):
                     if self._is_multi(n):
-                        k += min(self._day_target(n), self._day_count(n, d))
+                        k += self._day_count(n, d)   # 複数回数実施：実施した回数をそのまま数える（目標で頭打ちにしない。4.9）
                     elif self._occ_done(n, d):
                         k += 1
             for se in n.get("sessions") or []:
@@ -10769,6 +10877,20 @@ def run_gui(path=None):
                             c.create_text(cx + 9, y + 2, anchor="w", text=str(dk), font=fs, fill=TRIAL_RED, tags=("weeksum",))
                     c.create_text(cx, y + 22, text="月火水木金土日"[d.weekday()], font=fs, fill="#868e96", tags=("weeksum",))
                 y += 34
+            # ②' 複数回数実施（毎日・時刻なし）：実施した回数の集計（4.9）
+            multi_ = [n for n in self.mm.nodes.values() if self._is_multi(n) and not n.get("trial")]
+            if multi_:
+                y += 2
+                head(f"複数回数実施（{word}の回数）")
+                for n in multi_:
+                    k = self.week_done_count(n, d0, d1)
+                    goal_ = self._day_target(n) * len([d for d in days if d <= today])
+                    cr = sum(self._crowns(n, d)[0] for d in days)
+                    c.create_text(x, y, anchor="nw", text=(n.get("label") or "（無題）")[:12], font=fn, fill="#343a40",
+                                  tags=("weeksum", "n:" + n["id"]))
+                    c.create_text(xr, y, anchor="ne", text=f"{k}回" + (f"／目標{goal_}" if goal_ else "") +
+                                  (f"　♛{cr}" if cr else ""), font=fb, fill="#e8590c", tags=("weeksum", "n:" + n["id"]))
+                    y += 18
             # ③ 繰り返しタスク（今週の回数）
             reuse = [n for n in self.mm.nodes.values() if n.get("reusable")]
             if reuse:
@@ -11178,8 +11300,7 @@ def run_gui(path=None):
                 if n.get("kind") != "event":
                     n["kind"] = "task"
             else:
-                n.pop("day_target", None)
-                n.pop("day_counts", None)
+                n.pop("day_target", None)   # 実施の回数の記録（day_counts）は消さない（4.9）
             n["updated"] = now()
             self.touch()
             self.select(nid)
@@ -13200,7 +13321,7 @@ def run_gui(path=None):
             if cp:
                 self.checkpoint()
             if not freq:
-                for k in ("repeat", "exdates", "done_dates"):
+                for k in ("repeat", "exdates"):   # 実施の記録（done_dates）は消さない（4.9）
                     n.pop(k, None)
                 if untimed(n):
                     n.pop("sched_date", None)
@@ -13211,8 +13332,7 @@ def run_gui(path=None):
                 rp = {"freq": freq, "interval": 1}
                 if freq == "weekly":
                     rp["byweekday"] = [base.weekday()]
-                n["repeat"] = rp
-                n.pop("done_dates", None)
+                n["repeat"] = rp   # 実施の記録（done_dates）は消さない（4.9）
                 if n.get("kind") not in ("task", "goal"):
                     n["kind"] = "task"
                 msg = f"{ROUTINE_TYPES[freq]}タスク（{repeat_text(n)}）にしました"
@@ -13532,11 +13652,9 @@ def run_gui(path=None):
                     m.pop("sched_start", None)
                     m.pop("sched_end", None)
                 if new_rp:
-                    if new_rp != m.get("repeat"):
-                        m.pop("done_dates", None)
-                    m["repeat"] = new_rp
+                    m["repeat"] = new_rp   # 繰り返しを変えても実施の記録（done_dates）は消さない（4.9）
                 else:
-                    for k in ("repeat", "exdates", "done_dates"):
+                    for k in ("repeat", "exdates"):   # 実施の記録（done_dates）は消さない（4.9）
                         m.pop(k, None)
                 if val.get() == "なし" or vnot.get():
                     m.pop("alarm", None)
@@ -17705,6 +17823,8 @@ def run_gui(path=None):
             mb_ = d.get("mouse_btn")
             self.mouse_btn = {k: int(mb_[k]) for k in ("cal", "map")} if isinstance(mb_, dict) and \
                 all(isinstance(mb_.get(k), int) for k in ("cal", "map")) else None
+            if sys.platform.startswith("win") and self.mouse_btn == {"cal": 4, "map": 2}:
+                self.mouse_btn = None   # 以前の既定（Windows では届かないボタン 4）→ 新しい既定（戻る＝8）
             pw = d.get("panel_w")
             self.panel_w = int(pw) if isinstance(pw, (int, float)) and pw > 0 else None   # 左パネルの幅（None＝自動）
             so = d.get("sections") if isinstance(d.get("sections"), dict) else {}
@@ -19017,6 +19137,7 @@ def run_gui(path=None):
             self.pending_new = False   # その行は新しく追加した品か（入力し終えたら新しい行へ）
             self._busy = False
             self.box = [tk.Frame(tree, bg=color, height=2, width=2) for _ in range(4)]
+            self.uline = tk.Frame(tree, bg=color, height=2, width=2)   # 選んだ行の下線（4.9）
             tree.bind("<Up>", lambda ev: self._key(lambda: self.step(-1, 0)))
             tree.bind("<Down>", lambda ev: self._key(lambda: self.step(1, 0)))
             tree.bind("<Left>", lambda ev: self._key(lambda: self.step(0, -1)))
@@ -19111,7 +19232,7 @@ def run_gui(path=None):
                 self.resort()
 
         def show(self):
-            for f in self.box:
+            for f in self.box + [self.uline]:
                 f.place_forget()
             if not self.cur or not self.t.exists(self.cur[0]):
                 return
@@ -19126,6 +19247,15 @@ def run_gui(path=None):
             for f, (fx, fy, fw, fh) in zip(self.box, ((x, y, w, k), (x, y + h - k, w, k), (x, y, k, h), (x + w - k, y, k, h))):
                 f.place(x=fx, y=fy, width=fw, height=fh)
                 f.lift()
+            try:   # 選んだ行の下線：行の幅いっぱいに（行の塗りつぶしの代わり。4.9）
+                rb = self.t.bbox(self.cur[0])
+            except tk.TclError:
+                rb = None
+            if rb:
+                self.uline.place(x=0, y=rb[1] + rb[3] - 2, width=max(rb[0] + rb[2], self.t.winfo_width()), height=2)
+                self.uline.lift()
+                for f in self.box:
+                    f.lift()
 
         def step(self, dr, dc):
             """↑↓：上下の行、←→：隣の欄"""
@@ -19862,7 +19992,12 @@ def run_gui(path=None):
         SNAME = {k: n for k, n, _d, _c in STATUSES}
         SCOLOR = {k: c for k, _n, _d, c in STATUSES}
         # 売却価格 ÷ 購入価格 による分類（境目以上ならその分類）
-        RATIO_CLASSES = ((1.0, "投資"), (0.5, "耐久消費"), (0.25, "消耗品"), (0.0, "使い捨て"))
+        # 売却／購入指数の分類（4.9 で5つに。利用者の指示）：名前・範囲の表示・色（売却金額の輪の色）
+        RATIO_CLASSES = ((1.0, "投資"), (0.75, "耐久消費"), (0.5, "実用消費"), (0.25, "使い切り"), (0.0, "使い捨て"))
+        RATIO_RANGE = {"投資": "1.00〜", "耐久消費": "0.75〜1.00", "実用消費": "0.50〜0.75", "使い切り": "0.25〜0.50",
+                       "使い捨て": "0.25未満"}
+        RATIO_COLOR = {"投資": "#2b8a3e", "耐久消費": "#0c8599", "実用消費": "#1c7ed6", "使い切り": "#f08c00",
+                       "使い捨て": "#e03131"}
         TITLE = "IN/OUT_Navi"
 
         def __init__(self, app):
@@ -20136,7 +20271,8 @@ def run_gui(path=None):
                       foreground="#868e96", wraplength=700, justify="left").pack(side="bottom", anchor="w", pady=(4, 0))
             tf = ttk.Frame(f)
             tf.pack(fill="both", expand=True, pady=(6, 0))
-            t = self.tree = ttk.Treeview(tf, columns=[c[0] for c in self.COLS], show="headings", selectmode="extended")
+            t = self.tree = ttk.Treeview(tf, columns=[c[0] for c in self.COLS], show="headings", selectmode="extended",
+                                         style="Shop.Treeview")
             for k, txt, wd in self.COLS:
                 t.heading(k, text=txt)   # 並べ替えは見出しの ▲（昇順）▼（降順）をクリック（on_click で判定）
                 t.column(k, width=wd, minwidth=wd if k == "del" else 20, anchor="w" if k in ("name", "cat") else "center",
@@ -21031,9 +21167,15 @@ def run_gui(path=None):
             c.create_oval(L, my_ - 6, L + 12, my_ + 6, fill="#dee2e6", outline="#868e96", width=2)
             t_ = c.create_text(L + 15, my_, anchor="w", text="円の大きさ＝購入金額", font=(fam, 8, "bold"), fill="#495057")
             x_ = c.bbox(t_)[2] + 12
-            c.create_oval(x_, my_ - 6, x_ + 12, my_ + 6, outline=SELL_RING, width=3, dash=(5, 2))
-            c.create_text(x_ + 15, my_, anchor="w", text="緑の輪＝売却金額（円より外＝高く売れた）", font=(fam, 8, "bold"),
-                          fill=SELL_RING)
+            c.create_oval(x_, my_ - 6, x_ + 12, my_ + 6, outline="#495057", width=3, dash=(5, 2))
+            c.create_text(x_ + 15, my_, anchor="w", text="輪＝売却金額（円より外＝高く売れた）", font=(fam, 8, "bold"),
+                          fill="#495057")
+            my_ += 16   # 2行目：輪の色＝売却／購入指数の分類
+            t_ = c.create_text(L, my_, anchor="w", text="輪の色（売却÷購入）：", font=(fam, 8, "bold"), fill="#495057")
+            x_ = c.bbox(t_)[2] + 4
+            for _th, nm_ in self.RATIO_CLASSES:   # 輪の色＝売却／購入指数の分類
+                t_ = c.create_text(x_, my_, anchor="w", text=nm_, font=(fam, 8, "bold"), fill=self.RATIO_COLOR[nm_])
+                x_ = c.bbox(t_)[2] + 6
             lgx, lgy = L, B + 46   # 状態の凡例（色だけ）：横軸の名前の下
             for k_, n_, _d, col_ in self.STATUSES:
                 c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=mix(col_, 0.55), outline=col_, width=2)
@@ -21071,9 +21213,11 @@ def run_gui(path=None):
                     c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(scol, 0.6), outline="#212529" if hl else scol,
                                   width=4 if hl else 2.5, tags=tg)
                     sv_ = self.price_of(x.get("sell"))
-                    if sv_ > 0:   # 売却金額：同じ尺度の緑の輪（円より外＝買った値段より高く売れた、内＝安く売った。4.6）
+                    if sv_ > 0:   # 売却金額：同じ尺度の輪（円より外＝高く売れた）。色＝売却／購入指数の分類（4.9）
                         rs = max(4, rmax * (0.45 + 0.55 * math.sqrt(sv_ / mx)))
-                        c.create_oval(cx - rs, cy - rs, cx + rs, cy + rs, outline=SELL_RING, width=3, dash=(5, 2),
+                        r_ = self.ratio(x)
+                        rc_ = self.RATIO_COLOR[self.ratio_class(r_)] if r_ is not None else SELL_RING
+                        c.create_oval(cx - rs, cy - rs, cx + rs, cy + rs, outline=rc_, width=3, dash=(5, 2),
                                       tags=tg + ("sellring",))
                     nm = x.get("name", "")
                     fsz = 8 if r >= 16 else 7
@@ -21188,8 +21332,9 @@ def run_gui(path=None):
                  f"売った品 {P['out_n']}品：購入 {self.yen(P['out_cost'])} → 売却 {self.yen(P['out_v'])}")
             for th, nm in self.RATIO_CLASSES:
                 n_, pv, sv = P["ratio"][nm]
-                rng = {"投資": "1以上", "耐久消費": "0.5〜1", "消耗品": "0.25〜0.5", "使い捨て": "0.25未満"}[nm]
-                c.create_text(X0 + 10, y_, anchor="nw", text=f"{nm}（{rng}）", font=(fam, 8), fill="#495057")
+                rng = self.RATIO_RANGE[nm]
+                c.create_oval(X0 + 2, y_ + 3, X0 + 9, y_ + 10, fill=self.RATIO_COLOR[nm], outline="")
+                c.create_text(X0 + 13, y_, anchor="nw", text=f"{nm}（{rng}）", font=(fam, 8), fill=self.RATIO_COLOR[nm])
                 c.create_text(xr_, y_, anchor="ne", font=(fam, 8, "bold"), fill="#495057" if n_ else "#ced4da",
                               text=f"{n_}品")
                 y_ += 15
@@ -21313,8 +21458,8 @@ def run_gui(path=None):
                           text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入金額 {self.yen(tb)}"
                                f"　売却金額 {self.yen(ts)}　購入−売却 {self.yen(tb - ts)}")
             lx = W - 16
-            legend = [("売却金額", "#7048e8", "box")] + \
-                     [(n_, cc, "box") for _k, n_, _d, cc in reversed(self.QUAD)]
+            legend = [("売却：" + nm_, self.RATIO_COLOR[nm_], "box") for _t, nm_ in reversed(self.RATIO_CLASSES)] + \
+                     [(n_, cc, "box") for _k, n_, _d, cc in reversed(self.QUAD)]   # 売却の棒の色＝売却／購入指数（4.9）
             for nm, col, kind in legend:   # 凡例
                 t = c.create_text(lx, y + 22, anchor="ne", text=nm, font=(fam, 8), fill="#495057")
                 b = c.bbox(t)
@@ -21341,9 +21486,19 @@ def run_gui(path=None):
                         c.create_rectangle(X + gw * 0.12, yy - h_, X + gw * 0.5, yy,
                                            fill=next(cc for k, _n, _d, cc in self.QUAD if k == key), outline="#ffffff")
                     yy -= h_
-                h_ = (bot - top) * P["out_v"] / mx   # 売却金額（右の棒）
+                ys_ = bot   # 売却金額（右の棒）：売却／購入指数の分類ごとの色で積み上げ（4.9）
+                rest_ = P["out_v"]
+                for _t, nm_ in self.RATIO_CLASSES:
+                    sv_ = P["ratio"][nm_][2]
+                    h_ = (bot - top) * sv_ / mx
+                    if h_ > 0:
+                        c.create_rectangle(X + gw * 0.52, ys_ - h_, X + gw * 0.88, ys_, fill=self.RATIO_COLOR[nm_],
+                                           outline="#ffffff")
+                        ys_ -= h_
+                        rest_ -= sv_
+                h_ = (bot - top) * max(0, rest_) / mx   # 購入価格の無い品の売却
                 if h_ > 0:
-                    c.create_rectangle(X + gw * 0.52, bot - h_, X + gw * 0.88, bot, fill="#7048e8", outline="#ffffff")
+                    c.create_rectangle(X + gw * 0.52, ys_ - h_, X + gw * 0.88, ys_, fill="#7048e8", outline="#ffffff")
                 if P["in_v"] and gw > 34:
                     c.create_text(X + gw * 0.31, yy - 2, anchor="s", font=(fam, 7), fill="#495057",
                                   text=f"{P['in_v'] / 1000:.0f}千" if P["in_v"] >= 1000 else str(P["in_v"]))

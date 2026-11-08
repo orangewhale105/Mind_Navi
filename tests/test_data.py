@@ -343,6 +343,19 @@ class DataFileTest(unittest.TestCase):
         self.assertEqual(app.fill_doc(cur, old), 0)
         self.assertEqual(cur, snap)
 
+    def test_completion_records_never_dropped(self):
+        """（4.9）タスクの種類・繰り返しを変えても、実施の記録（done_dates・day_counts）を消さない。
+        消してよいのは、確認してゴミ箱に入れる「タスクの設定を外す」（untask）だけ"""
+        import re
+        with open(APP, encoding="utf-8") as f:
+            src = f.read()
+        self.assertEqual(re.findall(r'\.pop\("(?:done_dates|day_counts)"', src), [])
+        bad = []
+        for m in re.finditer(r'for k in \(([^)]*)\):\s*\n\s*(\w+)\.pop\(k', src):
+            if ("done_dates" in m.group(1) or "day_counts" in m.group(1)) and "trial" not in m.group(1):
+                bad.append(m.group(1))
+        self.assertEqual([b for b in bad if "alarms" not in b], [])   # alarms＝カレンダーに描くための仮の写し
+
     def test_fill_missing_only_adds(self):
         """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
         cur = {"a": "今", "b": "", "items": [{"id": "x", "v": "今", "memo": ""}], "tags": ["p"], "new": 1}
