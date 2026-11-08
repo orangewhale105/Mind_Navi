@@ -18900,9 +18900,8 @@ def run_gui(path=None):
         QUAD_AXIS = {"invest": "第1象限：人生価値 高 × 生活必要 高", "need": "第2象限：人生価値 低 × 生活必要 高",
                      "waste": "第3象限：人生価値 低 × 生活必要 低", "joy": "第4象限：人生価値 高 × 生活必要 低"}
         # 品の状態（2026-11-08。以前の 購入・購入予定・今は買わない のチェックの代わり）
-        STATUSES = (("wants", "Wants", "欲しい・検討中", "#1098ad"), ("buy", "Buy", "買う", "#2f9e44"),
-                    ("hold", "Hold", "保留（今は買わない）", "#f08c00"), ("clutter", "Clutter", "買わない・無駄", "#e03131"),
-                    ("sold", "Sold", "売った・手放した", "#7048e8"))
+        STATUSES = (("wants", "Wants", "", "#1098ad"), ("buy", "Buy", "", "#2f9e44"), ("hold", "Hold", "", "#f08c00"),
+                    ("clutter", "Clutter", "", "#e03131"), ("sold", "Sold", "", "#7048e8"))   # 名前の後に日本語は付けない
         SNAME = {k: n for k, n, _d, _c in STATUSES}
         SCOLOR = {k: c for k, _n, _d, c in STATUSES}
         # 売却価格 ÷ 購入価格 による分類（境目以上ならその分類）
@@ -19011,18 +19010,31 @@ def run_gui(path=None):
             return x.get("status_date", "") if ShoppingWin.status(x) == "buy" else ""
 
         @staticmethod
-        def hold_days(x, today=None):
-            """Hold にしていた日数の合計（今も Hold なら今日まで）"""
+        def durations(x, today=None):
+            """状態ごとの Duration（その状態にあった日数の合計）。今の状態は今日まで加算。
+            Wants → Buy にしても Wants の日数は残り、また Wants に戻るとそこから加算される"""
             today = today or datetime.date.today()
             log = sorted((lg for lg in x.get("status_log") or [] if _date(lg.get("d"))), key=lambda lg: lg["d"])
-            tot = 0
+            if not log:
+                d0 = _date(x.get("status_date")) or _date(x.get("added"))
+                log = [{"s": ShoppingWin.status(x), "d": d0.isoformat()}] if d0 else []
+            out = {}
             for i, lg in enumerate(log):
-                if lg.get("s") != "hold":
-                    continue
                 d0 = _date(lg["d"])
                 d1 = _date(log[i + 1]["d"]) if i + 1 < len(log) else today
-                tot += max(0, (d1 - d0).days)
-            return tot
+                out[lg.get("s")] = out.get(lg.get("s"), 0) + max(0, (d1 - d0).days)
+            return out
+
+        @staticmethod
+        def duration(x, today=None):
+            """今の状態の Duration（日）"""
+            return ShoppingWin.durations(x, today).get(ShoppingWin.status(x), 0)
+
+        @staticmethod
+        def transitions(x):
+            """状態の変化：[(前の状態, 次の状態, 日付)]（古い順）"""
+            log = sorted((lg for lg in x.get("status_log") or [] if _date(lg.get("d"))), key=lambda lg: lg["d"])
+            return [(log[i - 1].get("s"), log[i].get("s"), log[i]["d"]) for i in range(1, len(log))]
 
         @staticmethod
         def ratio(x):
@@ -19081,14 +19093,14 @@ def run_gui(path=None):
         # ---- 購入分析 ----
         COLS = (("del", "", 26), ("quad", "分類", 110), ("status", "状態", 78), ("name", "品名", 140), ("cat", "カテゴリ", 100),
                 ("gap", "", 12), ("life", "生活必要度", 118), ("value", "人生価値度", 118), ("price", "価格", 80),
-                ("sell", "売却価格", 80), ("diff", "購入−売却", 84), ("ratio", "売却／購入", 104), ("hold", "Hold期間", 72),
+                ("sell", "売却価格", 80), ("diff", "購入−売却", 84), ("ratio", "売却／購入", 104), ("dur", "Duration", 76),
                 ("daily", "毎回", 52), ("added", "追加日", 66), ("sdate", "変更日", 66))   # 分類をいちばん左に
         NEW = "__new__"   # いちばん下の「＋ 新しい品」の行
-        SORT_KEYS = ("quad", "status", "name", "cat", "life", "value", "price", "sell", "diff", "ratio", "hold", "daily",
+        SORT_KEYS = ("quad", "status", "name", "cat", "life", "value", "price", "sell", "diff", "ratio", "dur", "daily",
                      "added", "sdate")
         SORT_NAMES = {"quad": "分類", "status": "状態", "name": "品名", "cat": "カテゴリ", "life": "生活必要度",
                       "value": "人生価値度", "price": "価格", "sell": "売却価格", "diff": "購入−売却", "ratio": "売却／購入",
-                      "hold": "Hold期間", "daily": "毎回", "added": "追加日", "sdate": "変更日"}
+                      "dur": "Duration", "daily": "毎回", "added": "追加日", "sdate": "変更日"}
         NOSORT = ("gap", "del")
         TEXT_COLS = ("name", "price", "sell")   # 文字を入力する欄（ほかは押して選ぶ・数字キーで決める）
 
@@ -19117,6 +19129,7 @@ def run_gui(path=None):
             self.cb_lmon.pack(side="left", padx=4)
             self.cb_lmon.bind("<<ComboboxSelected>>", lambda ev: self.refresh())
             ttk.Button(top, text="カテゴリの編集…", command=self.edit_categories).pack(side="left", padx=(12, 0))
+            ttk.Button(top, text="データの復旧…", command=self.recover).pack(side="left", padx=(6, 0))
             self.lbl_total = ttk.Label(top, font=(self.app.fam_base, 10, "bold"))
             self.lbl_total.pack(side="right")
             # 並べ替え：第1〜第3（例：カテゴリ → 生活必要度 → 価格）
@@ -19202,7 +19215,6 @@ def run_gui(path=None):
             mb["menu"] = mm_
             mb.pack(side="right")
             ttk.Button(bf, text="元に戻す", command=self.undo_delete).pack(side="right", padx=(0, 6))
-            ttk.Button(bf, text="データの復旧…", command=self.recover).pack(side="right", padx=(0, 6))
             self.win.bind(f"<{MOD}-z>", lambda ev: self.undo_delete() if not self._cell else None)
             self.lbl_msg = ttk.Label(bf, foreground="#2b8a3e")
             self.lbl_msg.pack(side="left", padx=8)
@@ -19281,8 +19293,8 @@ def run_gui(path=None):
                 if k == "ratio":
                     r_ = self.ratio(x)
                     return -1.0 if r_ is None else r_
-                if k == "hold":
-                    return self.hold_days(x)
+                if k == "dur":
+                    return self.duration(x)
                 if k == "sdate":
                     return x.get("status_date") or ""
                 if k == "quad":
@@ -19902,7 +19914,7 @@ def run_gui(path=None):
             if k in cur:
                 self.set_sorts([(k_, (not r_) if k_ == k else r_) for k_, r_ in self.sorts])
             else:
-                self.sort_set(k, k in ("life", "value", "price", "sell", "diff", "ratio", "hold", "added", "sdate"), add)
+                self.sort_set(k, k in ("life", "value", "price", "sell", "diff", "ratio", "dur", "added", "sdate"), add)
 
         # ---- 購入分析 ----
         def _build_analysis(self):
@@ -19923,8 +19935,8 @@ def run_gui(path=None):
             self.chart.bind("<Configure>", lambda ev: self.draw_chart())
             tf = ttk.Frame(pw)
             pw.add(tf, minsize=80, height=110, stretch="never")   # 月ごとの表は小さめ（境目のドラッグで広げられる）
-            cols = [("mon", "月", 80), ("buy", "購入（Buy）", 100), ("sold", "売却（Sold）", 100), ("diff", "購入−売却", 100),
-                    ("wants", "Wants", 100), ("clutter", "Clutter（節約）", 110)]
+            cols = [("mon", "月", 80), ("in_v", "購入金額", 110), ("in_n", "購入品数", 80), ("out_v", "売却金額", 110),
+                    ("out_n", "売却品数", 80)]
             t = self.mtree = ttk.Treeview(tf, columns=[c[0] for c in cols], show="headings", height=3)
             for k, txt, wd in cols:
                 t.heading(k, text=txt)
@@ -19950,32 +19962,34 @@ def run_gui(path=None):
         def months(self):
             ms = set()
             for x in self.data["items"]:
-                for d_ in (self.month_of(x), self.buy_date(x)[:7] if self.status(x) in ("buy", "sold") else ""):
-                    if d_:
-                        ms.add(d_)
+                if self.month_of(x):
+                    ms.add(self.month_of(x))
+                for _a, _b, d_ in self.transitions(x):
+                    ms.add(d_[:7])
             return sorted(ms, reverse=True)
 
         def period_stats(self, mon):
             """期間（"YYYY-MM" か "すべて"）の集計：
-            Buy＝その期間に買った品（今 Buy か Sold）、Sold＝その期間に売った品、Wants・Clutter・Hold＝その期間にその状態にした品"""
+            購入金額＝その期間に Buy → Hold にした品の価格、売却金額＝その期間に Clutter → Sold にした品の売却価格
+            （同じ品は最初の1回だけ数える）。Duration は今の品の状態ごとの日数"""
             inp = lambda d_: mon == "すべて" or (d_ or "")[:7] == mon
             R = {"quad": {k: 0 for k, _n, _d, _c in self.QUAD}, "ratio": {nm: [0, 0, 0] for _t, nm in self.RATIO_CLASSES},
-                 "ratios": [], "hold_now": [], "hold_done": []}
-            for k in self.SNAME:
-                R[k + "_n"] = R[k + "_v"] = 0
-            R["sold_cost"] = 0
+                 "ratios": [], "dur": {k: [] for k in self.SNAME}, "in_n": 0, "in_v": 0, "out_n": 0, "out_v": 0, "out_cost": 0}
             today = datetime.date.today()
             for x in self.data["items"]:
-                st, pr = self.status(x), int(x.get("price") or 0)
-                if st in ("buy", "sold") and inp(self.buy_date(x)):
-                    R["buy_n"] += 1
-                    R["buy_v"] += pr
+                pr = int(x.get("price") or 0)
+                tr = self.transitions(x)
+                buy_hold = next((d_ for a, b, d_ in tr if a == "buy" and b == "hold"), None)
+                clut_sold = next((d_ for a, b, d_ in tr if a == "clutter" and b == "sold"), None)
+                if buy_hold and inp(buy_hold):
+                    R["in_n"] += 1
+                    R["in_v"] += pr
                     R["quad"][self.quad(x)] += pr
-                if st == "sold" and inp(x.get("status_date")):
+                if clut_sold and inp(clut_sold):
                     sl = int(x.get("sell") or 0)
-                    R["sold_n"] += 1
-                    R["sold_v"] += sl
-                    R["sold_cost"] += pr
+                    R["out_n"] += 1
+                    R["out_v"] += sl
+                    R["out_cost"] += pr
                     r_ = self.ratio(x)
                     if r_ is not None:
                         g = R["ratio"][self.ratio_class(r_)]
@@ -19983,14 +19997,7 @@ def run_gui(path=None):
                         g[1] += pr
                         g[2] += sl
                         R["ratios"].append(r_)
-                if st in ("wants", "clutter", "hold") and inp(x.get("status_date")):
-                    R[st + "_n"] += 1
-                    R[st + "_v"] += pr
-                hd = self.hold_days(x, today)
-                if st == "hold":
-                    R["hold_now"].append(hd)
-                elif hd and inp(x.get("status_date")):   # Hold を終えた品（その期間に次の状態にした）
-                    R["hold_done"].append(hd)
+                R["dur"][self.status(x)].append(self.duration(x, today))
             return R
 
         def draw_chart(self):
@@ -20141,9 +20148,9 @@ def run_gui(path=None):
             c.tag_bind("bub", "<Leave>", lambda ev: (self.chart.delete("tip"), self.chart.configure(cursor="")))
             # 右：その期間の 4象限ごとの購入金額（ドーナツ）と、状態ごとの集計
             P = self.period_stats(mon)
-            q, total = P["quad"], P["buy_v"]
+            q, total = P["quad"], P["in_v"]
             X0 = R + 28
-            c.create_text(X0, T - 16, anchor="nw", text="4象限ごとの購入金額（Buy）", font=(fam, 11, "bold"), fill="#212529")
+            c.create_text(X0, T - 16, anchor="nw", text="4象限ごとの購入金額", font=(fam, 11, "bold"), fill="#212529")
             rad = min(62, (side - 40) / 3.2)
             cx, cy = X0 + rad + 4, T + 10 + rad
             if total:
@@ -20188,17 +20195,20 @@ def run_gui(path=None):
                     c.create_text(X0 + 8, y_ - 2, anchor="nw", text=note, font=(fam, 8), fill="#868e96", width=side - 30)
                     y_ += 28
             cs = self.SCOLOR
-            line("Buy − Sold", self.yen(P["buy_v"] - P["sold_v"]), "#212529", True,
-                 f"購入 {self.yen(P['buy_v'])}（{P['buy_n']}品）− 売却 {self.yen(P['sold_v'])}（{P['sold_n']}品）")
-            line("Wants − Clutter", f"{P['wants_n'] - P['clutter_n']:+d} 品", cs["wants"], True,
-                 f"Wants {P['wants_n']}品 {self.yen(P['wants_v'])} ／ Clutter {P['clutter_n']}品 {self.yen(P['clutter_v'])}（節約）")
-            hn, hd_ = P["hold_now"], P["hold_done"]
-            line("Hold 期間", f"{len(hn)}品" + (f"・平均{sum(hn) / len(hn):.0f}日" if hn else ""), cs["hold"], False,
-                 (f"いちばん長い Hold {max(hn)}日　" if hn else "") + f"Hold を終えた品 {len(hd_)}品" +
-                 (f"（平均 {sum(hd_) / len(hd_):.0f}日）" if hd_ else ""))
+            line("購入金額（Buy → Hold）", self.yen(P["in_v"]), cs["hold"], True, f"{P['in_n']}品")
+            line("売却金額（Clutter → Sold）", self.yen(P["out_v"]), cs["sold"], True, f"{P['out_n']}品")
+            c.create_text(X0, y_, anchor="nw", text="Duration（今の状態の日数）", font=(fam, 9, "bold"), fill="#495057")
+            y_ += 18
+            for k_, n_, _d, col_ in self.STATUSES:
+                ds = P["dur"][k_]
+                c.create_text(X0 + 10, y_, anchor="nw", text=n_, font=(fam, 8, "bold"), fill=col_)
+                c.create_text(xr_, y_, anchor="ne", font=(fam, 8, "bold"), fill="#495057" if ds else "#ced4da",
+                              text=f"{len(ds)}品　平均 {sum(ds) / len(ds):.0f}日・最長 {max(ds)}日" if ds else "0品")
+                y_ += 15
+            y_ += 6
             rs = P["ratios"]
             line("売却価格 ／ 購入価格", (f"平均 {sum(rs) / len(rs):.2f}" if rs else "―"), cs["sold"], False,
-                 f"売った品 {P['sold_n']}品：購入 {self.yen(P['sold_cost'])} → 売却 {self.yen(P['sold_v'])}")
+                 f"売った品 {P['out_n']}品：購入 {self.yen(P['out_cost'])} → 売却 {self.yen(P['out_v'])}")
             for th, nm in self.RATIO_CLASSES:
                 n_, pv, sv = P["ratio"][nm]
                 rng = {"投資": "1以上", "耐久消費": "0.5〜1", "消耗品": "0.25〜0.5", "使い捨て": "0.25未満"}[nm]
@@ -20309,7 +20319,7 @@ def run_gui(path=None):
                 t.see(iid)
 
         def draw_trend(self, y, W, H):
-            """下段：1年間（選んだ月までの12か月）の推移：購入（Buy・4象限の積み上げ）と売却（Sold）の棒、その差（線）"""
+            """下段：1年間（選んだ月までの12か月）の推移：購入金額（Buy→Hold・4象限の積み上げ）と売却金額（Clutter→Sold）の棒"""
             c = self.chart
             fam = self.app.fam_base
             c.create_line(10, y - 4, W - 10, y - 4, fill="#e9ecef")
@@ -20321,12 +20331,12 @@ def run_gui(path=None):
                 m = em - 1 - k
                 ms.append(f"{ey + m // 12:04d}-{m % 12 + 1:02d}")
             stats = [self.period_stats(m) for m in ms]
-            tb, ts = sum(s_["buy_v"] for s_ in stats), sum(s_["sold_v"] for s_ in stats)
+            tb, ts = sum(s_["in_v"] for s_ in stats), sum(s_["out_v"] for s_ in stats)
             c.create_text(16, y + 2, anchor="nw", font=(fam, 11, "bold"), fill="#212529",
-                          text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入 {self.yen(tb)} − 売却 "
-                               f"{self.yen(ts)} ＝ {self.yen(tb - ts)}")
+                          text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入金額 {self.yen(tb)}"
+                               f"　売却金額 {self.yen(ts)}")
             lx = W - 16
-            legend = [("差（購入−売却）", "#343a40", "line"), ("売却", "#7048e8", "box")] + \
+            legend = [("売却金額", "#7048e8", "box")] + \
                      [(n_, cc, "box") for _k, n_, _d, cc in reversed(self.QUAD)]
             for nm, col, kind in legend:   # 凡例
                 t = c.create_text(lx, y + 22, anchor="ne", text=nm, font=(fam, 8), fill="#495057")
@@ -20337,7 +20347,7 @@ def run_gui(path=None):
                 else:
                     c.create_rectangle(b[0] - 13, b[1] + 2, b[0] - 3, b[3] - 2, fill=col, outline="")
                     lx = b[0] - 20
-            mx = max([s_["buy_v"] for s_ in stats] + [s_["sold_v"] for s_ in stats] + [1])
+            mx = max([s_["in_v"] for s_ in stats] + [s_["out_v"] for s_ in stats] + [1])
             x0, x1 = 64, W - 16
             top, bot = y + 40, max(y + 120, H - 22)
             gw = (x1 - x0) / 12
@@ -20345,7 +20355,6 @@ def run_gui(path=None):
                 yy = bot - (bot - top) * frac
                 c.create_line(x0, yy, x1, yy, fill="#f1f3f5")
                 c.create_text(x0 - 6, yy, anchor="e", text=self.yen(mx * frac), font=(fam, 7), fill="#868e96")
-            pts = []
             for i, (m, P) in enumerate(zip(ms, stats)):
                 X = x0 + i * gw
                 yy = bot
@@ -20355,22 +20364,16 @@ def run_gui(path=None):
                         c.create_rectangle(X + gw * 0.12, yy - h_, X + gw * 0.5, yy,
                                            fill=next(cc for k, _n, _d, cc in self.QUAD if k == key), outline="#ffffff")
                     yy -= h_
-                h_ = (bot - top) * P["sold_v"] / mx   # 売却（右の棒）
+                h_ = (bot - top) * P["out_v"] / mx   # 売却金額（右の棒）
                 if h_ > 0:
                     c.create_rectangle(X + gw * 0.52, bot - h_, X + gw * 0.88, bot, fill="#7048e8", outline="#ffffff")
-                if P["buy_v"] and gw > 34:
+                if P["in_v"] and gw > 34:
                     c.create_text(X + gw * 0.31, yy - 2, anchor="s", font=(fam, 7), fill="#495057",
-                                  text=f"{P['buy_v'] / 1000:.0f}千" if P["buy_v"] >= 1000 else str(P["buy_v"]))
+                                  text=f"{P['in_v'] / 1000:.0f}千" if P["in_v"] >= 1000 else str(P["in_v"]))
                 sel = m == mon
                 c.create_text(X + gw / 2, bot + 4, anchor="n", font=(fam, 8, "bold" if sel else "normal"),
                               fill="#1c7ed6" if sel else "#495057", text=f"{int(m[5:])}月")
-                df = P["buy_v"] - P["sold_v"]
-                pts.append((X + gw / 2, bot - (bot - top) * max(0, df) / mx))
             c.create_line(x0, bot, x1, bot, fill="#adb5bd")
-            if any(s_["buy_v"] or s_["sold_v"] for s_ in stats):
-                c.create_line(*[v for p_ in pts for v in p_], fill="#343a40", width=2)
-                for px, py in pts:
-                    c.create_oval(px - 3, py - 3, px + 3, py + 3, fill="#343a40", outline="#ffffff")
 
         # ---- 表示の更新 ----
         def refresh(self):
@@ -20427,7 +20430,7 @@ def run_gui(path=None):
                 sl = x.get("sell")
                 has_sl = sl not in (None, "")
                 r_ = self.ratio(x)
-                hd = self.hold_days(x, today)
+                dur = self.duration(x, today)
                 vals = {"del": "✕", "status": "⠿ " + self.SNAME[st], "name": x.get("name", ""),
                         "cat": x.get("cat", "") or "（選ぶ）", "gap": "",
                         "life": self.stars(x.get("life")), "value": self.stars(x.get("value")),
@@ -20435,7 +20438,7 @@ def run_gui(path=None):
                         "sell": self.yen(sl) if has_sl else ("（入力）" if st == "sold" else ""),
                         "diff": self.yen(int(x.get("price") or 0) - int(sl or 0)) if has_sl else "",
                         "ratio": f"{r_:.2f} {self.ratio_class(r_)}" if r_ is not None else "",
-                        "hold": (f"{hd}日" + ("…" if st == "hold" else "")) if (hd or st == "hold") else "",
+                        "dur": f"{dur}日",   # 今の状態の Duration（その状態にあった日数の合計。今も加算中）
                         "daily": "☑" if x.get("daily") else "☐", "quad": qn[self.quad(x)],
                         "added": (x.get("added") or "")[5:].replace("-", "/"),
                         "sdate": (x.get("status_date") or "")[2:].replace("-", "/")}
@@ -20487,9 +20490,9 @@ def run_gui(path=None):
             self._paint_chips()
             by = {k_: [x for x in self.data["items"] if self.status(x) == k_] for k_ in self.SNAME}
             ysum = lambda xs: self.yen(sum(int(x.get("price") or 0) for x in xs))
-            sold_v = sum(int(x.get("sell") or 0) for x in by["sold"])
-            self.lbl_total.configure(text=f"Buy {ysum(by['buy'])}（{len(by['buy'])}）　Wants {ysum(by['wants'])}（{len(by['wants'])}）"
-                                          f"　Sold 売却 {self.yen(sold_v)}（{len(by['sold'])}）")
+            P_ = self.period_stats("すべて")
+            self.lbl_total.configure(text=f"購入金額 {self.yen(P_['in_v'])}（{P_['in_n']}品）　売却金額 {self.yen(P_['out_v'])}"
+                                          f"（{P_['out_n']}品）")
             sub = {}
             for x in items:   # 表示中の品のカテゴリ別の小計
                 k_ = x.get("cat") or "（カテゴリなし）"
@@ -20519,17 +20522,18 @@ def run_gui(path=None):
             self.cb_amon.configure(values=ams)
             if self.v_amon.get() not in ams:
                 self.v_amon.set(cur)
-            # 月ごとの集計表：購入（Buy）・売却（Sold）・その差・Wants・Clutter
+            # 月ごとの集計表：購入金額（Buy→Hold）・売却金額（Clutter→Sold）
             mt = self.mtree
             mt.delete(*mt.get_children())
-            tot = [0, 0, 0, 0, 0]
+            tot = [0, 0, 0, 0]
             for m_ in sorted(set(self.months()) | {cur}, reverse=True):
                 st_ = self.period_stats(m_)
-                row = [st_["buy_v"], st_["sold_v"], st_["buy_v"] - st_["sold_v"], st_["wants_v"], st_["clutter_v"]]
+                row = [st_["in_v"], st_["in_n"], st_["out_v"], st_["out_n"]]
                 tot = [a_ + b_ for a_, b_ in zip(tot, row)]
                 mt.insert("", "end", iid=m_, tags=("sel",) if m_ == self.v_amon.get() else (),
-                          values=[m_.replace("-", "/")] + [self.yen(v_) for v_ in row])
-            mt.insert("", "end", iid="__sum__", tags=("sum",), values=["総計"] + [self.yen(v_) for v_ in tot])
+                          values=[m_.replace("-", "/"), self.yen(row[0]), f"{row[1]}品", self.yen(row[2]), f"{row[3]}品"])
+            mt.insert("", "end", iid="__sum__", tags=("sum",),
+                      values=["総計", self.yen(tot[0]), f"{tot[1]}品", self.yen(tot[2]), f"{tot[3]}品"])
             if getattr(self, "nav", None) is not None:   # 選んでいるセルの枠
                 if self.nav.cur and not t.exists(self.nav.cur[0]):
                     self.nav.cur = None
