@@ -93,6 +93,51 @@ class DataFileTest(unittest.TestCase):
         self.assertIn("VERSION", text.splitlines()[2])
         self.assertTrue(text.rstrip().endswith("# END OF FILE"))
 
+    def test_shopping_upgrade_keeps_current_data(self):
+        """IN/OUT_Navi：今の形式（v4）のデータを読み替えても、状態・★・売却価格・履歴が消えない（3.8 の不具合の再発防止）"""
+        import copy
+        d = {"v": 4, "categories": ["衣類"], "hold_limits": {"衣類": 3}, "order": ["a"], "items": [
+            {"id": "a", "name": "コート", "cat": "衣類", "life": 6, "value": 2, "price": 20000, "sell": 8000,
+             "daily": False, "added": "2026-01-02", "bought": "2026-01-05", "status": "sold", "status_date": "2026-10-01",
+             "status_log": [{"s": "wants", "d": "2026-01-02"}, {"s": "buy", "d": "2026-01-05"}, {"s": "sold", "d": "2026-10-01"}],
+             "future_field": {"x": 1}}]}
+        before = copy.deepcopy(d)
+        for _ in range(3):   # 何度読み替えても同じ
+            app.shopping_upgrade(d)
+        self.assertEqual(d, before)
+
+    def test_shopping_upgrade_old_formats(self):
+        """最初の形式（v なし）・v3 から読み替えて、何度読み替えても同じになる"""
+        import copy
+        old = {"items": [{"id": "x", "name": "本", "need": "1", "imp": "3", "price": "1500", "memo_extra": "残す"}],
+               "bought": [{"id": "y", "name": "洗剤", "need": "2", "imp": "2", "price": 400, "date": "2026-02-01"}]}
+        app.shopping_upgrade(old)
+        self.assertEqual(old["v"], 4)
+        x = next(i for i in old["items"] if i["id"] == "x")
+        y = next(i for i in old["items"] if i["id"] == "y")
+        self.assertEqual((x["life"], x["value"], x["status"], x["memo_extra"]), (6, 1, "wants", "残す"))
+        self.assertEqual((y["status"], y["bought"]), ("buy", "2026-02-01"))
+        once = copy.deepcopy(old)
+        app.shopping_upgrade(old)
+        self.assertEqual(old, once)
+        v3 = {"v": 3, "items": [{"id": "p", "name": "a", "life": 5, "value": 6, "price": 1, "plan": True, "added": "2026-03-01"},
+                                {"id": "q", "name": "b", "life": 2, "value": 3, "price": 1, "skip": True, "added": "2026-03-01"}]}
+        app.shopping_upgrade(v3)
+        self.assertEqual([i["status"] for i in v3["items"]], ["buy", "hold"])
+        self.assertEqual([(i["life"], i["value"]) for i in v3["items"]], [(5, 6), (2, 3)])
+
+    def test_groceries_keep_qty(self):
+        """買い物リスト：開くたびに個数が1に戻っていた不具合の再発防止"""
+        import copy
+        d = {"items": [{"id": "a", "name": "卵", "qty": 3, "price": 250, "need": 1, "bought": False, "x_unknown": 1}],
+             "staples": [], "history": []}
+        app.groceries_normalize(d)
+        once = copy.deepcopy(d)
+        app.groceries_normalize(d)
+        self.assertEqual(d, once)
+        self.assertEqual(d["items"][0]["qty"], 3)
+        self.assertEqual(d["items"][0]["x_unknown"], 1)
+
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
         w = app.BgWriter()

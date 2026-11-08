@@ -2287,6 +2287,115 @@ GROCERY_COLUMNS = (("chk", "購入", 46), ("name", "品名", 190), ("qty", "個�
                    ("sub", "小計", 84), ("need", "必要度 ▾", 70), ("wk", "週", 38), ("mo", "月", 38), ("yr", "年", 42))
 GROCERY_LAYOUT_VER = 2
 
+
+# ---- データの読み替え（2026-11-08 作り直し：何度呼んでも同じ結果・知らない項目は消さない・作り直さない） ----
+SHOP_STATUS_KEYS = ("wants", "buy", "hold", "clutter", "sold")
+SHOP_VERSION = 4
+
+
+def _shop_from_old(lv):
+    """最初の形式の3段階（1＝高い）→ 5段階（5＝高い）"""
+    return {"1": 5, "2": 3, "3": 1}.get(str(lv), 3)
+
+
+def shopping_upgrade(d):
+    """IN/OUT_Navi（旧 購入分析）のデータを今の形式（v4）にそろえる。
+    形式の番号 v：なし＝最初の形式、2＝5段階、3＝6段階、4＝状態つき。今より新しい番号ならさわらない。
+    【大事】以前の版（3.8）では v4 を「最初の形式」と取り違えて品を作り直し、状態・★などを消していた。
+    ここでは品を作り直さず、足りない項目を足すだけにする（何度呼んでも結果は同じ）"""
+    if not isinstance(d, dict):
+        return d
+    try:
+        v = int(d.get("v")) if d.get("v") is not None else 1
+    except (TypeError, ValueError):
+        v = 1
+    if v > SHOP_VERSION:
+        return d   # 新しい版で作ったデータ：知らない形式は変えない
+    d.setdefault("categories", ["食品", "日用品", "衣類", "趣味", "仕事・勉強", "交際", "その他"])
+    items = d.setdefault("items", [])
+    if v <= 1:   # 最初の形式（必要度・重要度、購入済みは別の表）
+        for x in items:
+            x.setdefault("id", uuid.uuid4().hex[:8])
+            if "life" not in x:
+                x["life"] = _shop_from_old(x.get("need"))
+            if "value" not in x:
+                x["value"] = _shop_from_old(x.get("imp"))
+            x["price"] = int(x.get("price") or 0)
+            x.setdefault("daily", False)
+            x.setdefault("added", datetime.date.today().isoformat())
+            x.setdefault("bought", "")
+        for b in d.pop("bought", None) or []:   # 購入済みの表 → 品（購入日つき）
+            if not isinstance(b, dict):
+                continue
+            y = dict(b)
+            y.setdefault("id", uuid.uuid4().hex[:8])
+            if "life" not in y:
+                y["life"] = _shop_from_old(b.get("need"))
+            if "value" not in y:
+                y["value"] = _shop_from_old(b.get("imp"))
+            y["price"] = int(y.get("price") or 0)
+            y.setdefault("daily", False)
+            y.setdefault("added", b.get("date") or "")
+            y["bought"] = b.get("date") or y.get("bought") or ""
+            items.append(y)
+        v = 2
+    if v == 2:   # 5段階 → 6段階（1→1, 2→2, 3→4, 4→5, 5→6）
+        for x in items:
+            for k in ("life", "value"):
+                try:
+                    x[k] = {1: 1, 2: 2, 3: 4, 4: 5, 5: 6}.get(int(x.get(k) or 3), 4)
+                except (TypeError, ValueError):
+                    x[k] = 4
+        v = 3
+    if v == 3:   # 状態（Wants・Buy・Hold・Clutter・Sold）へ：購入済み・購入予定→Buy、今は買わない→Hold、ほか→Wants
+        for x in items:
+            if x.get("status") not in SHOP_STATUS_KEYS:
+                st = "buy" if (x.get("bought") or x.get("plan")) else "hold" if x.get("skip") else "wants"
+                x["status"] = st
+                x["status_date"] = (x.get("bought") if st == "buy" and x.get("bought") else x.get("added")) or \
+                    datetime.date.today().isoformat()
+                x.setdefault("status_log", [{"s": st, "d": x["status_date"]}])
+        d.pop("order", None)   # 状態ごとのまとまりに並べ直す（1回だけ）
+        d.pop("groups", None)
+        v = 4
+    for x in items:   # 今の形式でも足りない項目は足す（あるものは変えない）
+        if isinstance(x, dict) and x.get("status") not in SHOP_STATUS_KEYS:
+            x["status"] = "wants"
+            x.setdefault("status_date", x.get("added") or datetime.date.today().isoformat())
+            x.setdefault("status_log", [{"s": "wants", "d": x["status_date"]}])
+    d["v"] = v
+    d.setdefault("hold_limits", {})   # カテゴリ → Hold の上限数
+    return d
+
+
+def groceries_normalize(d):
+    """買い物リストのデータを今の形式にそろえる（何度呼んでも同じ。個数・価格などの入力は消さない）。
+    【大事】以前は開くたびに個数（qty）を消して1に戻していた"""
+    if not isinstance(d, dict):
+        return d
+    d.setdefault("staples", [])
+    d.setdefault("items", [])
+    d.setdefault("history", [])
+    for x in d["items"]:   # 以前の形式（売り場・メモ・done）を読みかえる
+        if "done" in x:
+            x["bought"] = bool(x.pop("done"))
+        for k in ("sec", "memo"):
+            x.pop(k, None)
+        try:   # 個数：数なら残す（最初の形式の文字の「数量」だけ 1 に）
+            x["qty"] = max(1, int(float(unicodedata.normalize("NFKC", str(x.get("qty", 1))))))
+        except (TypeError, ValueError):
+            x["qty"] = 1
+        x.setdefault("need", 2)
+        x.setdefault("price", 0)
+    for x in d["staples"]:
+        for k in ("sec", "qty", "last", "every"):
+            x.pop(k, None)
+        x.setdefault("need", 2)
+        x.setdefault("price", 0)
+    d.pop("sections", None)
+    d["layout"] = {"v": GROCERY_LAYOUT_VER, "columns": [[k, t.replace(" ▾", ""), w] for k, t, w in GROCERY_COLUMNS]}
+    return d
+
 def install_ime_font_fix(root):
     """Windows：日本語入力（IME）の変換中の文字が、入力欄より大きな文字で別に表示されるのを防ぐ。
     入力欄・リストの入力欄にフォーカスが来たら、IME の変換中の文字をその欄と同じ書体・大きさにする"""
@@ -15183,7 +15292,7 @@ def run_gui(path=None):
             try:
                 if not self.path:
                     return
-                for key, lp, cv in (("shopping", SHOP_PATH, ShoppingWin.upgrade), ("memo", MEMO_PATH, None),
+                for key, lp, cv in (("shopping", SHOP_PATH, shopping_upgrade), ("memo", MEMO_PATH, None),
                                     ("lecture_conf", LECTURE_PATH, None), ("shift_conf", SHIFT_CONF, None)):
                     if os.path.exists(lp):
                         self.shared_get(key, lp, conv=cv)
@@ -17940,26 +18049,7 @@ def run_gui(path=None):
 
         def __init__(self, app):
             self.app = app
-            d = self.data = app.shared_get("groceries")
-            d.setdefault("staples", [])
-            d.setdefault("items", [])
-            d.setdefault("history", [])
-            for x in d["items"]:   # 以前の形式（売り場・数量・メモ・done）を読みかえる
-                if "done" in x:
-                    x["bought"] = bool(x.pop("done"))
-                for k in ("sec", "qty", "memo"):
-                    x.pop(k, None)
-                x.setdefault("need", 2)
-                x.setdefault("price", 0)
-            for x in d["staples"]:
-                for k in ("sec", "qty", "last", "every"):
-                    x.pop(k, None)
-                x.setdefault("need", 2)
-                x.setdefault("price", 0)
-            d.pop("sections", None)
-            for x in d["items"]:
-                x.setdefault("qty", 1)
-            d["layout"] = {"v": GROCERY_LAYOUT_VER, "columns": [[k, t.replace(" ▾", ""), w] for k, t, w in GROCERY_COLUMNS]}
+            d = self.data = groceries_normalize(app.shared_get("groceries"))   # 個数などの入力は消さない
             fam = app.fam_base
             self.font = (fam, 11)
             self._cell = None
@@ -18568,56 +18658,11 @@ def run_gui(path=None):
             self.refresh()
 
         # ---- データ ----
-        @staticmethod
-        def _from_old(lv):
-            """以前の3段階（1＝高い）→ 5段階（5＝高い）"""
-            return {"1": 5, "2": 3, "3": 1}.get(str(lv), 3)
-
         def load(self):
-            d = self.app.shared_get("shopping", SHOP_PATH, conv=ShoppingWin.upgrade)   # マップのデータファイルに保存（どのPCでも同じ）
-            return ShoppingWin.upgrade(d)
+            d = self.app.shared_get("shopping", SHOP_PATH, conv=shopping_upgrade)   # マップのデータファイルに保存（どのPCでも同じ）
+            return shopping_upgrade(d)
 
-        @staticmethod
-        def upgrade(d):
-            """以前の形式を今の形式（v3）に読みかえる"""
-            d.setdefault("categories", ["食品", "日用品", "衣類", "趣味", "仕事・勉強", "交際", "その他"])
-            items = d.get("items", [])
-            if d.get("v") not in (2, 3):   # 以前の形式（必要度・重要度・緊急度、購入済みは別の表）を読みかえる
-                new = []
-                for x in items:
-                    new.append({"id": x.get("id") or uuid.uuid4().hex[:8], "name": x.get("name", ""),
-                                "cat": x.get("cat", ""), "life": ShoppingWin._from_old(x.get("need")),
-                                "value": ShoppingWin._from_old(x.get("imp")), "price": int(x.get("price") or 0),
-                                "daily": bool(x.get("daily")), "added": x.get("added") or datetime.date.today().isoformat(),
-                                "bought": ""})
-                for b in d.get("bought", []):
-                    new.append({"id": b.get("id") or uuid.uuid4().hex[:8], "name": b.get("name", ""),
-                                "cat": b.get("cat", ""), "life": ShoppingWin._from_old(b.get("need")),
-                                "value": ShoppingWin._from_old(b.get("imp")), "price": int(b.get("price") or 0),
-                                "daily": bool(b.get("daily")), "added": b.get("added") or b.get("date") or "",
-                                "bought": b.get("date") or ""})
-                cats_ = d["categories"]
-                d.clear()
-                d.update({"v": 2, "categories": cats_, "items": new})
-            if d.get("v") == 2:   # 5段階 → 6段階（1→1, 2→2, 3→4, 4→5, 5→6）
-                for x in d.get("items", []):
-                    for k in ("life", "value"):
-                        x[k] = {1: 1, 2: 2, 3: 4, 4: 5, 5: 6}.get(int(x.get(k) or 3), 4)
-                d["v"] = 3
-            if d.get("v") == 3:   # 状態（Wants・Buy・Hold・Clutter・Sold）へ：購入済み・購入予定→Buy、今は買わない→Hold、ほか→Wants
-                for x in d.get("items", []):
-                    if x.get("status") not in ShoppingWin.SNAME:
-                        st = "buy" if (x.get("bought") or x.get("plan")) else "hold" if x.get("skip") else "wants"
-                        x["status"] = st
-                        x["status_date"] = (x.get("bought") if st == "buy" and x.get("bought") else x.get("added")) or \
-                            datetime.date.today().isoformat()
-                        x.setdefault("status_log", [{"s": st, "d": x["status_date"]}])
-                d["v"] = 4   # 以前の項目（bought・plan・skip）は消さずに残す
-                d.pop("order", None)   # 状態ごとのまとまりに並べ直す（開いたときに1回）
-                d.pop("groups", None)
-            d.setdefault("items", [])
-            d.setdefault("hold_limits", {})   # カテゴリ → Hold の上限数
-            return d
+        upgrade = staticmethod(shopping_upgrade)   # 読み替えは関数 shopping_upgrade（自動テストあり）
 
         def save(self):
             """マップのデータファイルに保存（自動保存とバックアップの対象）"""
