@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.2  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.3  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.2。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.3。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -62,6 +62,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
+APP_VERSION = "4.3"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2376,6 +2377,28 @@ def data_score(d):
             "shop_info": sum(1 for x in items if shop_informed(x)), "groc": len(gr.get("items") or [])}
 
 
+def shopping_protect(new_sh, old_sh, deleted=0):
+    """保存の前の守り（4.3）：IN/OUT_Navi の入力や品が、前に保存した中身（old_sh）より大きく減っていたら戻す。
+    ・入力（状態・★・売却価格など）のある品が半分未満になった → 消えた入力を前の中身から補う（shopping_fill_lost）
+    ・品の数が半分未満になり、画面で削除した数（deleted）より多く減った → 消えた品を前の中身から戻す
+    戻した数 (入力を補った品, 戻した品) を返す。new_sh はその場で直す"""
+    import copy as _copy
+    if not isinstance(new_sh, dict) or not isinstance(old_sh, dict):
+        return 0, 0
+    new_items = [x for x in new_sh.get("items") or [] if isinstance(x, dict)]
+    old_items = [x for x in old_sh.get("items") or [] if isinstance(x, dict)]
+    n_fill = n_add = 0
+    oi = sum(1 for x in old_items if shop_informed(x))
+    if oi >= 5 and sum(1 for x in new_items if shop_informed(x)) < oi * 0.5:
+        n_fill = shopping_fill_lost(new_sh, old_sh)
+    have = {x.get("id") for x in new_items}
+    missing = [x for x in old_items if x.get("id") not in have]
+    if len(old_items) >= 5 and len(new_items) < len(old_items) * 0.5 and len(missing) > deleted:
+        new_sh.setdefault("items", []).extend(_copy.deepcopy(missing))
+        n_add = len(missing)
+    return n_fill, n_add
+
+
 def shopping_fill_lost(cur, old):
     """IN/OUT_Navi の消えた入力を、古いデータ old から補う。同じ id の品で、今は入力が消えている（Wants・★4・売却価格なし）
     ものだけに、状態・★・売却価格・履歴などを戻す（あとで入力し直した品はそのまま）。戻した品の数を返す"""
@@ -3574,10 +3597,17 @@ def run_gui(path=None):
             """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存。
             保存の前に、データが大きく減っていないか確かめる（減っていれば前の中身を「保存前の退避」として残して知らせる）。
             1時間ごと・毎日・毎月の復元ポイントも残す"""
+            ap = os.path.abspath(path)
             d_ = mm.to_dict()
+            if not getattr(self, "_guard_skip", False):   # 復元ポイントから戻したときは守りを通さない
+                d_ = self._protect_before_save(path, ap, mm, d_)
+            self._guard_skip = False
+            sc_ = data_score(d_)
+            fp_ = {"ver": APP_VERSION, "at": now(), **sc_}   # 保存したときの数（次に開いたときに減っていないか比べる）
+            mm.view["mn_guard"] = fp_
+            d_.setdefault("view", {})["mn_guard"] = dict(fp_)
             txt = json.dumps(d_, ensure_ascii=False, indent=2)
             data = txt.encode("utf-8")
-            ap = os.path.abspath(path)
             self._save_guard(path, ap, d_)
             tmp = path + ".tmp"
             with open(tmp, "wb") as f:
@@ -3598,8 +3628,68 @@ def run_gui(path=None):
                 BG_WRITER.put(lambda kind=kind, data=data: rp_write(path, kind, data))
             self._groc_local = False
             self._file_sha[ap] = hashlib.sha1(data).hexdigest()
+            if mm is self.mm:
+                self._shop_deleted = 0   # 画面で削除した数（保存の守りで使う）を数え直す
             if history is not None:
                 self._save_undo(path, history)
+
+        def _protect_before_save(self, path, ap, mm, d_):
+            """保存の前の守り（4.3）：IN/OUT_Navi の入力・品が前に保存した中身より大きく減っていたら、前の中身から戻す。
+            戻したら知らせ、前の中身は「保存前の退避」の復元ポイントにも残す"""
+            prev = (getattr(self, "_saved_score", None) or {}).get(ap)
+            if not prev or not os.path.exists(path):
+                return d_
+            now_ = data_score(d_)
+            if not ((prev.get("shop_info", 0) >= 5 and now_["shop_info"] < prev["shop_info"] * 0.5) or
+                    (prev.get("shop", 0) >= 5 and now_["shop"] < prev["shop"] * 0.5)):
+                return d_
+            try:
+                with open(path, "rb") as f:
+                    raw = f.read()
+                old = json.loads(raw.decode("utf-8"))
+            except (OSError, ValueError):
+                return d_
+            old_sh = (old.get("view") or {}).get("shopping")
+            cur_sh = mm.view.setdefault("shopping", {})
+            n_fill, n_add = shopping_protect(cur_sh, old_sh, getattr(self, "_shop_deleted", 0) if mm is self.mm else 0)
+            if not (n_fill or n_add):
+                return d_
+            rp_write(path, "guard", raw)
+            w_ = getattr(self, "shop_win", None)
+            if w_ is not None and mm is self.mm:   # 開いている IN/OUT_Navi も直したデータで描き直す
+                try:
+                    w_.data = cur_sh
+                    w_.refresh()
+                except Exception:
+                    pass
+            msg = (f"IN/OUT_Navi のデータが大きく減ろうとしたので、前に保存した中身から戻しました"
+                   f"（入力を補った品 {n_fill}・戻した品 {n_add}）。")
+            self.set_status("⚠ " + msg)
+            try:
+                messagebox.showwarning(APP_NAME, msg + "\n\n意図して消した場合は、IN/OUT_Navi の ✕・Delete で消してください"
+                                                   "（画面で消した品は戻しません）。", parent=self.root)
+            except tk.TclError:
+                pass
+            return mm.to_dict()
+
+        def _check_guard_on_open(self):
+            """開いたとき（4.3）：前回 Mind_Navi で保存したときの数より大きく減っていたら知らせて、戻す画面を出す
+            （古い版のPCやほかの道具で上書きされたときに気づけるように）"""
+            st = self.mm.view.get("mn_guard")
+            if not isinstance(st, dict) or not self.path:
+                return
+            now_ = data_score(self.mm.to_dict())
+            names = {"nodes": "ノード", "shop": "IN/OUT_Navi の品", "shop_info": "IN/OUT_Navi の入力（状態・★など）",
+                     "groc": "買い物リストの品"}
+            drop = [k for k in names if int(st.get(k) or 0) >= 5 and now_.get(k, 0) < int(st.get(k) or 0) * 0.5]
+            if not drop:
+                return
+            msg = "、".join(f"{names[k]} {st.get(k)}→{now_.get(k, 0)}" for k in drop)
+            if messagebox.askyesno(APP_NAME, f"前回 Mind_Navi {st.get('ver', '')} で保存したとき（{str(st.get('at', ''))[:16]}）より、"
+                                             f"データが大きく減っています。\n\n{msg}\n\n"
+                                             "古い版の Mind_Navi のPCなどで上書きされた可能性があります。\n"
+                                             "復元ポイントから戻す画面を開きますか？", parent=self.root):
+                self.restore_dialog(focus="shop_info" if "shop_info" in drop else "shop" if "shop" in drop else "nodes")
 
         def _save_guard(self, path, ap, d_):
             """保存しようとしているデータが、前に保存したときより大きく減っていないか（不具合での消失を防ぐ）。
@@ -4000,11 +4090,12 @@ def run_gui(path=None):
                 ttk.Button(bf, text=txt, command=lambda m=mode: do(m)).pack(side="right", padx=3)
             if rows:
                 first = next(iter(rows))
-                if focus == "fill":   # IN/OUT_Navi の入力がいちばん多いものを選んでおく
+                if focus:   # その数（IN/OUT_Navi の入力など）がいちばん多い時点を選んでおく
+                    metric = "shop_info" if focus == "fill" else focus
                     best = None
                     for iid in list(rows)[:200]:
                         try:
-                            n_ = data_score(load(iid))["shop_info"]
+                            n_ = data_score(load(iid)).get(metric, 0)
                         except (OSError, ValueError, EOFError):
                             continue
                         if best is None or n_ > best[0]:
@@ -4060,6 +4151,7 @@ def run_gui(path=None):
                 if not n:
                     return msg
             self.dirty = True
+            self._guard_skip = True   # 戻した中身はそのまま保存する（保存の守りを通さない）
             self.touch()
             self.redraw()
             self.on_transition("復元", defer=False)
@@ -7828,7 +7920,7 @@ def run_gui(path=None):
         def update_title(self):
             name = os.path.basename(self.path) if self.path else "無題"
             out_ = self.path and getattr(self, "data_dir", None) and not self.in_data_dir(self.path)
-            self.root.title(f"{APP_NAME} - {name}{' *' if self.dirty else ''}"
+            self.root.title(f"{APP_NAME} {APP_VERSION} - {name}{' *' if self.dirty else ''}"
                             + ("　⚠ Googleドライブのデータフォルダの外に保存中" if out_ else ""))
             self.refresh_filter_ui()
             self.v_layout.set(self.mm.layout_mode(self.style))
@@ -16579,6 +16671,7 @@ def run_gui(path=None):
             return True
 
         def _after_load(self):
+            self.root.after(800, self._check_guard_on_open)   # 前回より大きく減っていないか（古い版などでの上書き）
             if not self.mm.view.get("idx_rank_v1"):   # 指標を「順位（1が最も高い）」に：以前の入力（6が高い）を読みかえる
                 ch_ = False
                 for n_ in self.mm.nodes.values():
@@ -19606,6 +19699,7 @@ def run_gui(path=None):
                     next((r for r in reversed(rows[:k]) if r not in ids), None)
             batch = [(n_, x) for n_, x in enumerate(self.data["items"]) if x["id"] in ids]
             self._undo_del.append(batch)
+            self.app._shop_deleted = getattr(self.app, "_shop_deleted", 0) + len(batch)   # 画面で消した数（保存の守りで戻さない）
             self.data["items"] = [x for x in self.data["items"] if x["id"] not in ids]
             self.save()
             self.refresh()
@@ -19618,6 +19712,7 @@ def run_gui(path=None):
                 self.lbl_msg.configure(text="元に戻す削除はありません")
                 return "break"
             batch = self._undo_del.pop()
+            self.app._shop_deleted = max(0, getattr(self.app, "_shop_deleted", 0) - len(batch))
             for n_, x in batch:
                 self.data["items"].insert(min(n_, len(self.data["items"])), x)
             self.save()
