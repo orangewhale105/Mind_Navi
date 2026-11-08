@@ -189,6 +189,32 @@ class DataFileTest(unittest.TestCase):
                                          "groceries": {"items": [{}, {}]}}}
         self.assertEqual(app.data_score(d), {"nodes": 3, "shop": 3, "shop_info": 3, "groc": 2})
 
+    def test_shopping_protect_on_save(self):
+        """保存の前の守り：入力が消えた・品が減った（画面で消した数より多く）ときは前の中身から戻す"""
+        import copy
+        old = {"v": 4, "items": [{"id": f"i{k}", "name": f"品{k}", "life": 6, "value": 1, "price": 100,
+                                  "status": "hold", "status_log": [{"s": "buy", "d": "2026-01-01"}, {"s": "hold", "d": "2026-02-01"}]}
+                                 for k in range(8)]}
+        wiped = copy.deepcopy(old)
+        for x in wiped["items"]:
+            x.update(life=4, value=4, status="wants", status_log=[{"s": "wants", "d": "2026-11-08"}])
+        self.assertEqual(app.shopping_protect(wiped, old), (8, 0))
+        self.assertTrue(all(x["status"] == "hold" and x["life"] == 6 for x in wiped["items"]))
+        emptied = {"v": 4, "items": []}
+        self.assertEqual(app.shopping_protect(emptied, old), (0, 8))
+        self.assertEqual(len(emptied["items"]), 8)
+        deleted_on_screen = {"v": 4, "items": copy.deepcopy(old["items"][:2])}   # 画面で6品消した
+        self.assertEqual(app.shopping_protect(deleted_on_screen, old, deleted=6), (0, 0))
+        self.assertEqual(len(deleted_on_screen["items"]), 2)
+        normal = copy.deepcopy(old)
+        normal["items"][0]["status"] = "sold"
+        self.assertEqual(app.shopping_protect(normal, old), (0, 0))
+
+    def test_app_version_matches_header(self):
+        with open(APP, encoding="utf-8") as f:
+            head = f.readline() + f.readline() + f.readline()
+        self.assertIn(f"VERSION {app.APP_VERSION} ", head)
+
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
         w = app.BgWriter()
