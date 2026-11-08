@@ -2276,6 +2276,129 @@ class BgWriter:
 BG_WRITER = BgWriter()
 
 
+# ---- 復元ポイント（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避 を、このPCとデータフォルダの両方に残す ----
+RP_KINDS = (("open", "開いたとき", 30), ("hourly", "1時間ごと", 48), ("daily", "毎日", 120), ("monthly", "毎月", 36),
+            ("guard", "保存前の退避", 30), ("restore", "戻す前", 20))   # （種類, 表示名, 残す数）
+RP_NAME = {k: n for k, n, _c in RP_KINDS}
+RP_SUBDIR = "Mind_Navi_backups"   # データファイルと同じフォルダ（Google ドライブ）に作る
+
+
+def rp_dirs(path):
+    """そのデータファイルの復元ポイントの置き場所：[このPC, データファイルと同じフォルダ]"""
+    ap = os.path.abspath(path)
+    stem = os.path.splitext(os.path.basename(ap))[0]
+    local = os.path.join(BACKUP_DIR, "points", f"{stem}_{zlib.crc32(ap.encode('utf-8')) & 0xffffffff:08x}")
+    return [local, os.path.join(os.path.dirname(ap), RP_SUBDIR, stem)]
+
+
+def rp_write(path, kind, data):
+    """復元ポイントを書く（data は保存するファイルの中身。gzip で小さくする）。古いものは種類ごとに決めた数だけ残す"""
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    keep = next((c for k, _n, c in RP_KINDS if k == kind), 30)
+    raw = data if isinstance(data, bytes) else data.encode("utf-8")
+    for d in rp_dirs(path):
+        try:
+            os.makedirs(d, exist_ok=True)
+            fp = os.path.join(d, f"{kind}_{stamp}.json.gz")
+            with gzip.open(fp + ".tmp", "wb", compresslevel=6) as f:
+                f.write(raw)
+            os.replace(fp + ".tmp", fp)
+            olds = sorted(f for f in os.listdir(d) if f.startswith(kind + "_") and f.endswith(".json.gz"))
+            for f in olds[:-keep]:
+                os.remove(os.path.join(d, f))
+        except OSError:
+            pass
+
+
+def rp_list(path):
+    """復元ポイントの一覧（新しい順）：[(日時, 種類, ファイル)]。同じ時刻・種類が両方の場所にあれば1つに"""
+    seen, out = set(), []
+    for d in rp_dirs(path):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for f in names:
+            if not f.endswith(".json.gz") or "_" not in f:
+                continue
+            kind, stamp = f[:-8].split("_", 1)
+            try:
+                t = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+            except ValueError:
+                continue
+            if (kind, stamp) in seen:
+                continue
+            seen.add((kind, stamp))
+            out.append((t, kind, os.path.join(d, f)))
+    return sorted(out, reverse=True)
+
+
+def rp_due(path, now_=None):
+    """保存するときに残すべき定期の復元ポイント（1時間ごと・毎日・毎月）"""
+    now_ = now_ or datetime.datetime.now()
+    last = {}
+    for t, kind, _f in rp_list(path):
+        last.setdefault(kind, t)
+    due = []
+    if "hourly" not in last or now_ - last["hourly"] >= datetime.timedelta(hours=1):
+        due.append("hourly")
+    if "daily" not in last or last["daily"].date() != now_.date():
+        due.append("daily")
+    if "monthly" not in last or (last["monthly"].year, last["monthly"].month) != (now_.year, now_.month):
+        due.append("monthly")
+    return due
+
+
+def read_data_file(fp):
+    """データファイル（.json か .json.gz）を読む"""
+    if fp.endswith(".gz"):
+        with gzip.open(fp, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    with open(fp, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def shop_informed(x):
+    """IN/OUT_Navi の品に、状態・★・売却価格などの入力があるか（消えてしまった品は False）"""
+    return bool(isinstance(x, dict) and (x.get("status") not in (None, "wants") or int(x.get("life") or 4) != 4 or
+                                         int(x.get("value") or 4) != 4 or x.get("sell") not in (None, "") or
+                                         len(x.get("status_log") or []) > 1))
+
+
+def data_score(d):
+    """データの大きさの目安：ノード数・IN/OUT_Navi の品数と入力のある品数・買い物リストの品数"""
+    v = (d or {}).get("view") or {}
+    sh = v.get("shopping") if isinstance(v.get("shopping"), dict) else {}
+    gr = v.get("groceries") if isinstance(v.get("groceries"), dict) else {}
+    items = [x for x in sh.get("items") or [] if isinstance(x, dict)]
+    return {"nodes": len((d or {}).get("nodes") or []), "shop": len(items),
+            "shop_info": sum(1 for x in items if shop_informed(x)), "groc": len(gr.get("items") or [])}
+
+
+def shopping_fill_lost(cur, old):
+    """IN/OUT_Navi の消えた入力を、古いデータ old から補う。同じ id の品で、今は入力が消えている（Wants・★4・売却価格なし）
+    ものだけに、状態・★・売却価格・履歴などを戻す（あとで入力し直した品はそのまま）。戻した品の数を返す"""
+    import copy as _copy
+    old = shopping_upgrade(_copy.deepcopy(old))
+    src = {x.get("id"): x for x in old.get("items") or [] if isinstance(x, dict)}
+    keys = ("status", "status_date", "status_log", "life", "value", "sell", "bought", "plan", "skip")
+    n = 0
+    for x in cur.get("items") or []:
+        o = src.get(x.get("id"))
+        if not o or shop_informed(x) or not shop_informed(o):
+            continue
+        for k in keys:
+            if k in o:
+                x[k] = _copy.deepcopy(o[k])
+        for k, val in o.items():   # 今のデータに無い項目も戻す
+            x.setdefault(k, _copy.deepcopy(val))
+        n += 1
+    for k in ("hold_limits",):
+        if not cur.get(k) and old.get(k):
+            cur[k] = _copy.deepcopy(old[k])
+    return n
+
+
 def version_dir(path):
     ap = os.path.abspath(path)
     stem = os.path.splitext(os.path.basename(ap))[0]
@@ -3447,9 +3570,14 @@ def run_gui(path=None):
             return True
 
         def _write_doc(self, path, mm, history=None):
-            """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存"""
-            txt = json.dumps(mm.to_dict(), ensure_ascii=False, indent=2)
+            """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存。
+            保存の前に、データが大きく減っていないか確かめる（減っていれば前の中身を「保存前の退避」として残して知らせる）。
+            1時間ごと・毎日・毎月の復元ポイントも残す"""
+            d_ = mm.to_dict()
+            txt = json.dumps(d_, ensure_ascii=False, indent=2)
             data = txt.encode("utf-8")
+            ap = os.path.abspath(path)
+            self._save_guard(path, ap, d_)
             tmp = path + ".tmp"
             with open(tmp, "wb") as f:
                 f.write(data)
@@ -3462,13 +3590,45 @@ def run_gui(path=None):
                     os.replace(mp + ".tmp", mp)
                 except OSError:
                     pass
-            ap = os.path.abspath(path)
             self._known_mtime[ap] = os.path.getmtime(path)
             self.__dict__.setdefault("_core_sigs", {})[ap] = self._core_sig(json.loads(txt))
+            self.__dict__.setdefault("_saved_score", {})[ap] = data_score(d_)
+            for kind in rp_due(path):   # 定期の復元ポイント（書き込みは別の処理で）
+                BG_WRITER.put(lambda kind=kind, data=data: rp_write(path, kind, data))
             self._groc_local = False
             self._file_sha[ap] = hashlib.sha1(data).hexdigest()
             if history is not None:
                 self._save_undo(path, history)
+
+        def _save_guard(self, path, ap, d_):
+            """保存しようとしているデータが、前に保存したときより大きく減っていないか（不具合での消失を防ぐ）。
+            減っていたら、今のファイルの中身を「保存前の退避」の復元ポイントとして残し、入力が消えたときは知らせる"""
+            prev = (getattr(self, "_saved_score", None) or {}).get(ap)
+            if not prev or not os.path.exists(path):
+                return
+            now_ = data_score(d_)
+            drop = [k for k in prev if prev[k] >= 5 and now_.get(k, 0) < prev[k] * 0.5]
+            if not drop:
+                return
+            try:
+                with open(path, "rb") as f:
+                    old = f.read()
+            except OSError:
+                return
+            rp_write(path, "guard", old)   # 確実に残す（その場で書く）
+            names = {"nodes": "ノード", "shop": "IN/OUT_Navi の品", "shop_info": "IN/OUT_Navi の入力（状態・★など）",
+                     "groc": "買い物リストの品"}
+            msg = "、".join(f"{names[k]} {prev[k]}→{now_.get(k, 0)}" for k in drop)
+            self.set_status(f"⚠ データが大きく減りました（{msg}）。前の中身を復元ポイント「保存前の退避」に残しました")
+            wiped = "shop_info" in drop and now_.get("shop", 0) >= prev.get("shop", 0) * 0.9   # 品はあるのに入力だけ消えた
+            if wiped or "nodes" in drop:
+                try:
+                    messagebox.showwarning(APP_NAME, f"保存しようとしているデータが、前より大きく減っています。\n\n{msg}\n\n"
+                                                     "念のため、前の中身を復元ポイント「保存前の退避」に残しました。\n"
+                                                     "意図しない変化なら［ファイル］→［復元ポイントから戻す…］で戻せます。",
+                                           parent=self.root)
+                except tk.TclError:
+                    pass
 
         def _undo_path(self, path):
             return os.path.join(version_dir(path), "undo.json.gz")
@@ -3582,8 +3742,12 @@ def run_gui(path=None):
                 with open(p, "rb") as fb_:
                     raw_ = fb_.read()
                 self._file_sha[os.path.abspath(p)] = hashlib.sha1(raw_).hexdigest()
+                if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのまま復元ポイントへ
+                    BG_WRITER.put(lambda p=p, raw_=raw_: rp_write(p, "open", raw_))
                 try:
-                    self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(json.loads(raw_.decode("utf-8")))
+                    d0_ = json.loads(raw_.decode("utf-8"))
+                    self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(d0_)
+                    self.__dict__.setdefault("_saved_score", {})[os.path.abspath(p)] = data_score(d0_)
                 except ValueError:
                     pass
             except OSError:
@@ -3729,57 +3893,177 @@ def run_gui(path=None):
                 self._after_load()
                 self.set_status("バックアップから開きました。「名前を付けて保存」で保存してください")
 
-        def restore_dialog(self):
-            """今のマップを、画面切り替えごとに残したバックアップの版から選んで復元する"""
+        def restore_dialog(self, focus=None):
+            """復元ポイントから戻す（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避・自動保存の版 から選び、
+            全部／IN/OUT_Navi だけ／買い物リストだけ を戻す、または IN/OUT_Navi の消えた入力だけを補う。
+            戻す前の中身も復元ポイント「戻す前」に残すので、やり直せる"""
             if not self.path:
-                messagebox.showinfo(APP_NAME, "保存先のあるマップで使えます（無題のマップは起動時にバックアップを確認します）",
-                                    parent=self.root)
+                messagebox.showinfo(APP_NAME, "保存先のあるマップで使えます", parent=self.root)
                 return
-            self.on_transition("復元の前")
-            cands = self._backup_candidates(self.path)
-            if not cands:
-                messagebox.showinfo(APP_NAME, "このマップのバックアップはまだありません", parent=self.root)
-                return
+            self.on_transition("復元の前", defer=False)
+            BG_WRITER.flush()
+            cands = [(t, RP_NAME.get(k, k), fp) for t, k, fp in rp_list(self.path)]
+            for t_, bp in self._backup_candidates(self.path):   # 以前からの自動保存の版・同じフォルダのバックアップ
+                kind = "同じフォルダの .backup" if bp == mirror_path(self.path) else "自動保存の版"
+                cands.append((datetime.datetime.fromtimestamp(t_), kind, bp))
+            for lp in (SHOP_PATH, SHOP_PATH + ".imported"):   # 以前このPCだけに保存していた IN/OUT_Navi（購入分析）
+                if os.path.exists(lp):
+                    cands.append((datetime.datetime.fromtimestamp(os.path.getmtime(lp)), "以前のPCの購入分析", lp))
+            cands.sort(key=lambda c: c[0], reverse=True)
             w = tk.Toplevel(self.root)
-            w.title("バックアップから復元")
+            w.title("復元ポイントから戻す")
             w.transient(self.root)
-            ttk.Label(w, text=f"「{os.path.basename(self.path)}」のバックアップ（新しい順）\n"
-                              "選んで［復元］を押すと、その時点の内容に戻します（Ctrl+Z で取り消せます）",
-                      padding=(10, 8)).pack(anchor="w")
-            lb = tk.Listbox(w, height=min(15, len(cands)), width=44, font=(self.fam_base, 10))
-            lb.pack(fill="both", expand=True, padx=10)
-            for t_, bp in cands:
-                try:
-                    with open(bp, encoding="utf-8") as fp:
-                        k = len(json.load(fp).get("nodes") or [])
-                    info = f"ノード {k}"
-                except (OSError, ValueError, AttributeError):
-                    info = "（読めません）"
-                lb.insert("end", f"{_mtime_text(t_)}　{info}")
-            lb.selection_set(0)
+            w.geometry("860x560")
+            ttk.Label(w, padding=(10, 8), wraplength=820, justify="left",
+                      text=f"「{os.path.basename(self.path)}」の復元ポイント（新しい順）。選ぶと下に中身の数を表示します。\n"
+                           "戻す前の中身は復元ポイント「戻す前」に残るので、いつでもやり直せます。"
+                           "Google ドライブの「版を管理」でダウンロードした古いファイルは［ファイルを選ぶ…］で使えます。").pack(anchor="w")
+            tf = ttk.Frame(w)
+            tf.pack(fill="both", expand=True, padx=10)
+            tv = ttk.Treeview(tf, columns=("t", "k", "w"), show="headings", selectmode="browse")
+            for c, txt, wd in (("t", "日時", 170), ("k", "種類", 170), ("w", "場所", 460)):
+                tv.heading(c, text=txt)
+                tv.column(c, width=wd, anchor="w")
+            sb = ttk.Scrollbar(tf, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            tv.pack(fill="both", expand=True)
+            rows = {}
 
-            def do():
-                sel = lb.curselection()
+            def add(t, kind, fp, top=False):
+                iid = f"r{len(rows)}"
+                rows[iid] = fp
+                where = "このPC" if os.path.abspath(fp).startswith(os.path.abspath(BACKUP_DIR)) else os.path.dirname(fp)
+                tv.insert("", 0 if top else "end", iid=iid, values=(t.strftime("%Y/%m/%d %H:%M:%S"), kind, where))
+                return iid
+            for t, kind, fp in cands:
+                add(t, kind, fp)
+            info = tk.StringVar(value="（復元ポイントを選んでください）")
+            ttk.Label(w, textvariable=info, padding=(10, 6), foreground="#1864ab",
+                      font=(self.fam_base, 10, "bold")).pack(anchor="w")
+            cache = {}
+
+            def load(iid):
+                fp = rows[iid]
+                if fp not in cache:
+                    d = read_data_file(fp)
+                    if isinstance(d, dict) and "nodes" not in d and "items" in d:   # IN/OUT_Navi だけのファイル
+                        d = {"nodes": [], "view": {"shopping": d}}
+                    cache[fp] = d
+                return cache[fp]
+
+            def on_sel(ev=None):
+                sel = tv.selection()
                 if not sel:
                     return
-                bp = cands[sel[0]][1]
                 try:
-                    with open(bp, encoding="utf-8") as fp:
-                        d = json.load(fp)
-                    MindNavi.from_dict(d)
-                except (OSError, ValueError, KeyError, TypeError) as err:
-                    messagebox.showerror(APP_NAME, f"このバックアップは読み込めません:\n{err}", parent=w)
+                    sc = data_score(load(sel[0]))
+                except (OSError, ValueError, EOFError) as err:
+                    info.set(f"読めません：{err}")
                     return
-                self.checkpoint()
-                self._restore(json.dumps(d, ensure_ascii=False))
-                w.destroy()
-                self.on_transition("復元")
-                self.set_status(f"バックアップ（{_mtime_text(cands[sel[0]][0])}）から復元しました（Ctrl+Z で元に戻せます）")
+                cur = data_score(self.mm.to_dict())
+                info.set(f"この時点：ノード {sc['nodes']}　IN/OUT_Navi {sc['shop']}品（入力あり {sc['shop_info']}）　"
+                         f"買い物リスト {sc['groc']}品　　｜　今：ノード {cur['nodes']}　IN/OUT_Navi {cur['shop']}品"
+                         f"（入力あり {cur['shop_info']}）　買い物リスト {cur['groc']}品")
+            tv.bind("<<TreeviewSelect>>", on_sel)
+
+            def pick_file():
+                fp = filedialog.askopenfilename(parent=w, title="戻すのに使うデータファイル",
+                                                filetypes=[("Mind_Navi のデータ", "*.json *.json.gz"), ("すべて", "*.*")])
+                if fp:
+                    iid = add(datetime.datetime.fromtimestamp(os.path.getmtime(fp)), "選んだファイル", fp, top=True)
+                    tv.selection_set(iid)
+                    tv.see(iid)
+
+            def do(mode):
+                sel = tv.selection()
+                if not sel:
+                    messagebox.showinfo(APP_NAME, "復元ポイントを選んでください", parent=w)
+                    return
+                try:
+                    d = load(sel[0])
+                except (OSError, ValueError, EOFError) as err:
+                    messagebox.showerror(APP_NAME, f"このファイルは読めません：\n{err}", parent=w)
+                    return
+                msg = self._apply_restore(d, mode, parent=w)
+                if msg:
+                    info.set(msg)
+                    messagebox.showinfo(APP_NAME, msg, parent=w)
+                    on_sel()
             bf = ttk.Frame(w, padding=8)
             bf.pack(fill="x")
-            ttk.Button(bf, text="復元", command=do).pack(side="right")
-            ttk.Button(bf, text="キャンセル", command=w.destroy).pack(side="right", padx=6)
-            lb.bind("<Double-Button-1>", lambda ev: do())
+            ttk.Button(bf, text="ファイルを選ぶ…", command=pick_file).pack(side="left")
+            ttk.Button(bf, text="閉じる", command=w.destroy).pack(side="right")
+            for txt, mode in (("全部をこの時点に戻す", "all"), ("買い物リストだけ戻す", "groc"), ("IN/OUT_Navi だけ戻す", "shop"),
+                              ("IN/OUT_Navi の消えた入力を補う", "fill")):
+                ttk.Button(bf, text=txt, command=lambda m=mode: do(m)).pack(side="right", padx=3)
+            if rows:
+                first = next(iter(rows))
+                if focus == "fill":   # IN/OUT_Navi の入力がいちばん多いものを選んでおく
+                    best = None
+                    for iid in list(rows)[:200]:
+                        try:
+                            n_ = data_score(load(iid))["shop_info"]
+                        except (OSError, ValueError, EOFError):
+                            continue
+                        if best is None or n_ > best[0]:
+                            best = (n_, iid)
+                    first = best[1] if best else first
+                tv.selection_set(first)
+                tv.see(first)
+
+        def _apply_restore(self, d, mode, parent=None):
+            """復元ポイントの中身 d を戻す。mode：all＝全部、shop＝IN/OUT_Navi、groc＝買い物リスト、fill＝IN/OUT_Navi の消えた入力を補う"""
+            v = (d or {}).get("view") or {}
+            if mode in ("shop", "fill") and not isinstance(v.get("shopping"), dict):
+                messagebox.showinfo(APP_NAME, "この復元ポイントには IN/OUT_Navi のデータがありません", parent=parent)
+                return None
+            if mode == "groc" and not isinstance(v.get("groceries"), dict):
+                messagebox.showinfo(APP_NAME, "この復元ポイントには買い物リストのデータがありません", parent=parent)
+                return None
+            if mode == "all" and not d.get("nodes"):
+                messagebox.showinfo(APP_NAME, "このファイルはマップ全体のデータではありません（IN/OUT_Navi だけ戻せます）", parent=parent)
+                return None
+            names = {"all": "全部", "shop": "IN/OUT_Navi", "groc": "買い物リスト", "fill": "IN/OUT_Navi の消えた入力"}
+            if mode != "fill" and not messagebox.askyesno(APP_NAME, f"{names[mode]}をこの時点に戻しますか？\n"
+                                                                     "（今の中身は復元ポイント「戻す前」に残します）", parent=parent):
+                return None
+            BG_WRITER.flush()
+            if self.path and os.path.exists(self.path):   # 戻す前の中身を残す（やり直せるように）
+                try:
+                    with open(self.path, "rb") as f:
+                        rp_write(self.path, "restore", f.read())
+                except OSError:
+                    pass
+            self._close_data_windows()
+            import copy as _copy
+            if mode == "all":
+                self.checkpoint()
+                self._restore(json.dumps(d, ensure_ascii=False))
+                for k in SHARED_VIEW_KEYS:   # 別画面のデータもこの時点に
+                    if k in v:
+                        self.mm.view[k] = _copy.deepcopy(v[k])
+                msg = "全部をこの時点に戻しました"
+            elif mode == "shop":
+                self.mm.view["shopping"] = shopping_upgrade(_copy.deepcopy(v["shopping"]))
+                msg = "IN/OUT_Navi をこの時点に戻しました"
+            elif mode == "groc":
+                self.mm.view["groceries"] = groceries_normalize(_copy.deepcopy(v["groceries"]))
+                msg = "買い物リストをこの時点に戻しました"
+            else:
+                cur = self.mm.view.setdefault("shopping", {})
+                shopping_upgrade(cur)
+                n = shopping_fill_lost(cur, v["shopping"])
+                msg = (f"IN/OUT_Navi の {n} 品に、消えていた入力（状態・★・売却価格など）を戻しました" if n else
+                       "この復元ポイントからは、補える入力はありませんでした（別の時点を選んでください）")
+                if not n:
+                    return msg
+            self.dirty = True
+            self.touch()
+            self.redraw()
+            self.on_transition("復元", defer=False)
+            self.set_status(msg)
+            return msg
 
         def open_backup_folder(self):
             os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -4134,7 +4418,7 @@ def run_gui(path=None):
             dl.add_command(label="取り込んだ勤務・休みをすべて削除…", command=self.delete_all_shifts)
             f.add_cascade(label="取り込んだデータの削除", menu=dl)
             f.add_separator()
-            f.add_command(label="バックアップから復元…", command=self.restore_dialog)
+            f.add_command(label="復元ポイント（バックアップ）から戻す…", command=self.restore_dialog)
             f.add_command(label="自動バックアップのフォルダを開く", command=self.open_backup_folder)
             f.add_separator()
             f.add_command(label="終了", command=self.on_close)
@@ -18656,6 +18940,9 @@ def run_gui(path=None):
             self._build_list()
             self._build_analysis()
             self.refresh()
+            items_ = self.data.get("items") or []
+            if len(items_) >= 3 and not any(shop_informed(x) for x in items_):   # 入力が消えているようなら復旧をすすめる
+                self.win.after(400, self._offer_recover)
 
         # ---- データ ----
         def load(self):
@@ -18663,6 +18950,18 @@ def run_gui(path=None):
             return shopping_upgrade(d)
 
         upgrade = staticmethod(shopping_upgrade)   # 読み替えは関数 shopping_upgrade（自動テストあり）
+
+        def _offer_recover(self):
+            if messagebox.askyesno(self.TITLE, "IN/OUT_Navi のすべての品で、状態・★・売却価格などの入力が消えているようです\n"
+                                               "（以前の版の不具合が原因です。申し訳ありません）。\n\n"
+                                               "復元ポイント・バックアップから、消えた入力を補いますか？\n"
+                                               "（入力のいちばん多い時点を選んだ画面を開きます）", parent=self.win):
+                self.recover()
+
+        def recover(self):
+            """データの復旧：復元ポイントから IN/OUT_Navi の消えた入力を補う（いちばん入力の多い時点を選んでおく）"""
+            self.save()
+            self.app.restore_dialog(focus="fill")
 
         def save(self):
             """マップのデータファイルに保存（自動保存とバックアップの対象）"""
@@ -18903,6 +19202,7 @@ def run_gui(path=None):
             mb["menu"] = mm_
             mb.pack(side="right")
             ttk.Button(bf, text="元に戻す", command=self.undo_delete).pack(side="right", padx=(0, 6))
+            ttk.Button(bf, text="データの復旧…", command=self.recover).pack(side="right", padx=(0, 6))
             self.win.bind(f"<{MOD}-z>", lambda ev: self.undo_delete() if not self._cell else None)
             self.lbl_msg = ttk.Label(bf, foreground="#2b8a3e")
             self.lbl_msg.pack(side="left", padx=8)

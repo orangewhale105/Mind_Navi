@@ -138,6 +138,57 @@ class DataFileTest(unittest.TestCase):
         self.assertEqual(d["items"][0]["qty"], 3)
         self.assertEqual(d["items"][0]["x_unknown"], 1)
 
+    def test_fill_lost_shopping_entries(self):
+        """消えた IN/OUT_Navi の入力を古いデータから補う。あとで入力し直した品はそのまま"""
+        old = {"v": 4, "items": [
+            {"id": "a", "name": "コート", "life": 6, "value": 2, "price": 1, "status": "sold", "sell": 500,
+             "status_log": [{"s": "buy", "d": "2026-01-01"}, {"s": "sold", "d": "2026-02-01"}]},
+            {"id": "b", "name": "本", "life": 5, "value": 5, "price": 1, "status": "buy"},
+            {"id": "c", "name": "靴", "life": 1, "value": 1, "price": 1, "status": "hold"}]}
+        broken = {"v": 4, "items": [
+            {"id": "a", "name": "コート", "life": 4, "value": 4, "price": 1, "status": "wants",
+             "status_log": [{"s": "wants", "d": "2026-11-08"}]},
+            {"id": "b", "name": "本", "life": 3, "value": 4, "price": 1, "status": "wants"},   # 入力し直した品
+            {"id": "c", "name": "靴", "life": 4, "value": 4, "price": 1, "status": "wants"},
+            {"id": "d", "name": "新しい品", "life": 4, "value": 4, "price": 1, "status": "wants"}]}
+        n = app.shopping_fill_lost(broken, old)
+        self.assertEqual(n, 2)
+        by = {x["id"]: x for x in broken["items"]}
+        self.assertEqual((by["a"]["status"], by["a"]["life"], by["a"]["sell"]), ("sold", 6, 500))
+        self.assertEqual((by["b"]["status"], by["b"]["life"]), ("wants", 3))
+        self.assertEqual((by["c"]["status"], by["d"]["status"]), ("hold", "wants"))
+
+    def test_restore_points(self):
+        """復元ポイント：このPCとデータフォルダの両方に書き、種類ごとに数を保つ。保存の時期の判定"""
+        import datetime
+        saved = app.BACKUP_DIR
+        app.BACKUP_DIR = os.path.join(self.tmp, "bk")
+        try:
+            data_file = os.path.join(self.tmp, "drive", "my.json")
+            os.makedirs(os.path.dirname(data_file))
+            with open(data_file, "w", encoding="utf-8") as f:
+                f.write('{"nodes": [], "view": {}}')
+            self.assertEqual(set(app.rp_due(data_file)), {"hourly", "daily", "monthly"})
+            app.rp_write(data_file, "hourly", b'{"nodes": [1], "view": {}}')
+            app.rp_write(data_file, "daily", b'{"nodes": [1], "view": {}}')
+            app.rp_write(data_file, "monthly", b'{"nodes": [1], "view": {}}')
+            self.assertEqual(app.rp_due(data_file), [])
+            later = datetime.datetime.now() + datetime.timedelta(hours=2)
+            self.assertIn("hourly", app.rp_due(data_file, later))
+            for d in app.rp_dirs(data_file):
+                self.assertEqual(len([f for f in os.listdir(d) if f.endswith(".json.gz")]), 3)
+            self.assertTrue(app.rp_dirs(data_file)[1].startswith(os.path.join(self.tmp, "drive", app.RP_SUBDIR)))
+            lst = app.rp_list(data_file)
+            self.assertEqual(len(lst), 3)   # 両方の場所にあっても1つに
+            self.assertEqual(app.read_data_file(lst[0][2])["nodes"], [1])
+        finally:
+            app.BACKUP_DIR = saved
+
+    def test_data_score_detects_wiped_entries(self):
+        d = {"nodes": [{}] * 3, "view": {"shopping": {"items": [{"status": "buy"}, {"status": "hold"}, {"life": 6}]},
+                                         "groceries": {"items": [{}, {}]}}}
+        self.assertEqual(app.data_score(d), {"nodes": 3, "shop": 3, "shop_info": 3, "groc": 2})
+
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
         w = app.BgWriter()
