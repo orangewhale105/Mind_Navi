@@ -159,7 +159,8 @@ class DataFileTest(unittest.TestCase):
         self.assertEqual((by["c"]["status"], by["d"]["status"]), ("hold", "wants"))
 
     def test_restore_points(self):
-        """復元ポイント：このPCとデータフォルダの両方に書き、種類ごとに数を保つ。保存の時期の判定"""
+        """バックアップ（4.5）：12種類。データフォルダとこの PC の両方に書く。PC ごとに分け、種類ごとに2つ（開閉は10、
+        バージョンアップの前は消さない）。中身が同じなら書かない。期間が過ぎた種類だけ書く。4.4 までのものも一覧に出て消えない"""
         import datetime
         saved = app.BACKUP_DIR
         app.BACKUP_DIR = os.path.join(self.tmp, "bk")
@@ -168,19 +169,55 @@ class DataFileTest(unittest.TestCase):
             os.makedirs(os.path.dirname(data_file))
             with open(data_file, "w", encoding="utf-8") as f:
                 f.write('{"nodes": [], "view": {}}')
-            self.assertEqual(set(app.rp_due(data_file)), {"hourly", "daily", "monthly"})
-            app.rp_write(data_file, "hourly", b'{"nodes": [1], "view": {}}')
-            app.rp_write(data_file, "daily", b'{"nodes": [1], "view": {}}')
-            app.rp_write(data_file, "monthly", b'{"nodes": [1], "view": {}}')
-            self.assertEqual(app.rp_due(data_file), [])
-            later = datetime.datetime.now() + datetime.timedelta(hours=2)
-            self.assertIn("hourly", app.rp_due(data_file, later))
+            kinds = [k for k, _n, _c, _p in app.RP_KINDS if k not in ("guard", "restore", "hourly", "daily", "monthly")]
+            self.assertEqual(kinds, ["m5", "m30", "h1", "open", "close", "d1", "d2", "d3", "w1", "mo1", "mo3", "y1", "upgrade"])
+            # 4.4 までの名前のバックアップ（消さずに一覧に出す）
             for d in app.rp_dirs(data_file):
-                self.assertEqual(len([f for f in os.listdir(d) if f.endswith(".json.gz")]), 3)
-            self.assertTrue(app.rp_dirs(data_file)[1].startswith(os.path.join(self.tmp, "drive", app.RP_SUBDIR)))
+                os.makedirs(d, exist_ok=True)
+                import gzip
+                with gzip.open(os.path.join(d, "daily_20261101-120000.json.gz"), "wb") as f:
+                    f.write(b'{"nodes": [9], "view": {}}')
+            t0 = datetime.datetime(2026, 11, 8, 9, 0, 0)
+            periodic = ["m5", "m30", "h1", "d1", "d2", "d3", "w1", "mo1", "mo3", "y1"]
+            self.assertEqual(app.rp_due(data_file, t0, pc="home"), periodic)
+            for k in periodic:
+                self.assertEqual(app.rp_write(data_file, k, b'{"nodes": [1]}', pc="home", now_=t0), 2)   # 両方の場所
+            self.assertEqual(app.rp_due(data_file, t0 + datetime.timedelta(minutes=1), pc="home"), [])
+            self.assertEqual(app.rp_due(data_file, t0 + datetime.timedelta(minutes=6), pc="home"), ["m5"])
+            self.assertEqual(app.rp_due(data_file, t0 + datetime.timedelta(days=2, minutes=1), pc="home"),
+                             ["m5", "m30", "h1", "d1", "d2"])
+            self.assertEqual(app.rp_due(data_file, t0, pc="school"), periodic)   # PC ごとに別
+            # 中身が同じなら書かない
+            self.assertEqual(app.rp_write(data_file, "m5", b'{"nodes": [1]}', pc="home",
+                                          now_=t0 + datetime.timedelta(minutes=6)), 0)
+            # 種類ごとに2つだけ残す（ほかの PC のものは消さない）
+            app.rp_write(data_file, "m5", b'{"nodes": [1]}', pc="school", now_=t0)
+            for i in range(2, 6):
+                app.rp_write(data_file, "m5", ('{"nodes": [%d]}' % i).encode(), pc="home",
+                             now_=t0 + datetime.timedelta(minutes=5 * i))
             lst = app.rp_list(data_file)
-            self.assertEqual(len(lst), 3)   # 両方の場所にあっても1つに
-            self.assertEqual(app.read_data_file(lst[0][2])["nodes"], [1])
+            home_m5 = [x for x in lst if x[1] == "m5" and x[3] == "home"]
+            self.assertEqual([app.read_data_file(x[2])["nodes"] for x in home_m5], [[5], [4]])
+            self.assertEqual(len([x for x in lst if x[1] == "m5" and x[3] == "school"]), 1)
+            self.assertEqual([x[1] for x in lst if x[0] == datetime.datetime(2026, 11, 1, 12)], ["daily"])
+            for d in app.rp_dirs(data_file):   # 両方の場所に同じ数
+                self.assertTrue(os.path.exists(os.path.join(d, "daily_20261101-120000.json.gz")))
+                self.assertEqual(len([f for f in os.listdir(d) if "_home_" in f and f.startswith("m5_")]), 2)
+            self.assertTrue(app.rp_dirs(data_file)[1].startswith(os.path.join(self.tmp, "drive", app.RP_SUBDIR)))
+            # 開いたとき：前の版で保存したファイルは「バージョンアップの前」に残し、消さない
+            old = json.dumps({"nodes": [7], "view": {"mn_guard": {"ver": "4.2"}}}).encode()
+            app.rp_on_open(data_file, old)
+            app.rp_on_open(data_file, old)
+            up = [x for x in app.rp_list(data_file) if x[1] == "upgrade"]
+            self.assertEqual([(x[4], app.read_data_file(x[2])["nodes"]) for x in up], [("4.2", [7])])
+            app.rp_on_open(data_file, json.dumps({"nodes": [8], "view": {"mn_guard": {"ver": app.APP_VERSION}}}).encode())
+            self.assertEqual(len([x for x in app.rp_list(data_file) if x[1] == "upgrade"]), 1)   # 今の版なら作らない
+            for i in range(12):   # 開いたときは10回分
+                app.rp_write(data_file, "open", ('{"n": %d}' % i).encode(), pc="home",
+                             now_=t0 + datetime.timedelta(seconds=i))
+            self.assertEqual(len([x for x in app.rp_list(data_file) if x[1] == "open" and x[3] == "home"]), 10)
+            self.assertGreater(app.ver_tuple("4.10"), app.ver_tuple("4.9"))
+            self.assertNotIn("_", app.rp_pc_name())
         finally:
             app.BACKUP_DIR = saved
 

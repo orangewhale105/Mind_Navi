@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.4  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.5  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.4。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.5。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -62,7 +62,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "4.4"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "4.5"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2094,7 +2094,7 @@ GOOGLE_SETTINGS = os.path.join(os.path.expanduser("~"), ".mind_navi_google.json"
 GOOGLE_TOKEN = os.path.join(os.path.expanduser("~"), ".mind_navi_google_token.json")
 CATEGORY_SETTINGS = os.path.join(os.path.expanduser("~"), ".mind_navi_categories.json")
 NEW_TASK_MIN = 30   # 新しく置くタスクの実施時間（分）の既定
-SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries")   # 別画面のデータ
+SHARED_VIEW_KEYS = ("mission", "place", "vipassana", "shopping", "memo", "lifeplan", "reviews", "lecture_conf", "shift_conf", "groceries", "remind_state")   # 別画面のデータ
 SHOP_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_shopping.json")   # 購入分析（旧版の保存先・取り込み元。旧名のまま）
 MEMO_PATH = os.path.join(os.path.expanduser("~"), ".taskmap_memo.json")       # メモページ（旧版の保存先・取り込み元。旧名のまま）
 REMIND_STATE = os.path.join(os.path.expanduser("~"), ".mind_navi_reminders.json")  # 重要期限を最後に出した日
@@ -2278,42 +2278,110 @@ class BgWriter:
 BG_WRITER = BgWriter()
 
 
-# ---- 復元ポイント（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避 を、このPCとデータフォルダの両方に残す ----
-RP_KINDS = (("open", "開いたとき", 30), ("hourly", "1時間ごと", 48), ("daily", "毎日", 120), ("monthly", "毎月", 36),
-            ("guard", "保存前の退避", 30), ("restore", "戻す前", 20))   # （種類, 表示名, 残す数）
-RP_NAME = {k: n for k, n, _c in RP_KINDS}
+# ---- バックアップ（復元ポイント。4.5 で決めなおし、docs/SPEC.md 5.2）----
+# データフォルダ（Google ドライブ）の Mind_Navi_backups と、この PC の両方に同じものを書く。
+# ファイル名：<種類>_<日時>_<PC の名前>_<中身の指紋>[_<版>].json.gz（PC ごとに分ける。互いに上書きしない）
+# 種類ごとに新しいものから決めた数だけ残す（2つ残すと、1つ前は必ず1〜2期間前の中身になり、抜ける期間が出ない）
+RP_KINDS = (("m5", "5分ごと", 2, 5 * 60), ("m30", "30分ごと", 2, 30 * 60), ("h1", "1時間ごと", 2, 3600),
+            ("open", "開いたとき", 10, None), ("close", "閉じたとき", 10, None),
+            ("d1", "1日ごと", 2, 86400), ("d2", "2日ごと", 2, 2 * 86400), ("d3", "3日ごと", 2, 3 * 86400),
+            ("w1", "1週間ごと", 2, 7 * 86400), ("mo1", "1か月ごと", 2, 30 * 86400), ("mo3", "3か月ごと", 2, 91 * 86400),
+            ("y1", "1年ごと", 2, 365 * 86400),
+            ("upgrade", "バージョンアップの前", 0, None),   # 0＝消さない
+            ("guard", "保存前の退避", 30, None), ("restore", "戻す前", 20, None),
+            # 4.4 までの種類：一覧に出して戻せるようにするだけ（新しくは作らない・消さない）
+            ("hourly", "1時間ごと（4.4まで）", 0, None), ("daily", "毎日（4.4まで）", 0, None),
+            ("monthly", "毎月（4.4まで）", 0, None))
+RP_NAME = {k: n for k, n, _c, _p in RP_KINDS}
+RP_KEEP = {k: c for k, _n, c, _p in RP_KINDS}
+RP_PERIODIC = tuple((k, p) for k, _n, _c, p in RP_KINDS if p and k not in ("hourly", "daily", "monthly"))
 RP_SUBDIR = "Mind_Navi_backups"   # データファイルと同じフォルダ（Google ドライブ）に作る
 
 
+def rp_pc_name():
+    """バックアップのファイル名に入れる PC の名前（英数字と - だけ）"""
+    import socket
+    try:
+        n = socket.gethostname() or ""
+    except OSError:
+        n = ""
+    n = re.sub(r"[^A-Za-z0-9-]+", "-", n.split(".")[0]).strip("-")[:30]
+    return n or "PC"
+
+
+def ver_tuple(v):
+    """版番号を比べられる形に（"4.10" > "4.9"）"""
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or "")))
+
+
 def rp_dirs(path):
-    """そのデータファイルの復元ポイントの置き場所：[このPC, データファイルと同じフォルダ]"""
+    """そのデータファイルのバックアップの置き場所：[この PC, データファイルと同じフォルダ]"""
     ap = os.path.abspath(path)
     stem = os.path.splitext(os.path.basename(ap))[0]
     local = os.path.join(BACKUP_DIR, "points", f"{stem}_{zlib.crc32(ap.encode('utf-8')) & 0xffffffff:08x}")
     return [local, os.path.join(os.path.dirname(ap), RP_SUBDIR, stem)]
 
 
-def rp_write(path, kind, data):
-    """復元ポイントを書く（data は保存するファイルの中身。gzip で小さくする）。古いものは種類ごとに決めた数だけ残す"""
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    keep = next((c for k, _n, c in RP_KINDS if k == kind), 30)
+def rp_parse(name):
+    """ファイル名を読む → (種類, 日時, PC の名前, 指紋, 版) か None。4.4 までの「種類_日時」の名前も読む"""
+    if not name.endswith(".json.gz"):
+        return None
+    parts = name[:-8].split("_")
+    if len(parts) < 2:
+        return None
+    try:
+        t = datetime.datetime.strptime(parts[1], "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+    pc = parts[2] if len(parts) >= 4 else ""
+    h = parts[3] if len(parts) >= 4 else ""
+    ver = parts[4][1:] if len(parts) >= 5 and parts[4].startswith("v") else ""
+    return parts[0], t, pc, h, ver
+
+
+def rp_write(path, kind, data, pc=None, ver="", now_=None):
+    """バックアップを書く（data は保存するファイルの中身。gzip で小さくする）。
+    ・同じ PC・同じ種類のいちばん新しいものと中身が同じなら書かない（同じ中身で古いものを押し出さない）
+    ・書いたら読み直して確かめ、確かめられたときだけ、古いものを決めた数まで消す
+    書いた場所の数を返す"""
+    pc = pc or rp_pc_name()
     raw = data if isinstance(data, bytes) else data.encode("utf-8")
+    h = hashlib.sha1(raw).hexdigest()[:10]
+    stamp = (now_ or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    keep = RP_KEEP.get(kind, 30)
+    name = f"{kind}_{stamp}_{pc}_{h}" + (f"_v{ver}" if ver else "") + ".json.gz"
+    n_ = 0
     for d in rp_dirs(path):
         try:
             os.makedirs(d, exist_ok=True)
-            fp = os.path.join(d, f"{kind}_{stamp}.json.gz")
+            mine = sorted((r[1], f) for f in os.listdir(d)
+                          for r in [rp_parse(f)] if r and r[0] == kind and r[2] == pc)
+            if mine and rp_parse(mine[-1][1])[3] == h:
+                continue
+            if kind == "upgrade" and any(rp_parse(f)[3] == h for _t, f in mine):
+                continue
+            fp = os.path.join(d, name)
             with gzip.open(fp + ".tmp", "wb", compresslevel=6) as f:
                 f.write(raw)
+            with gzip.open(fp + ".tmp", "rb") as f:   # 読み直して確かめる
+                ok = hashlib.sha1(f.read()).hexdigest()[:10] == h
+            if not ok:
+                os.remove(fp + ".tmp")
+                continue
             os.replace(fp + ".tmp", fp)
-            olds = sorted(f for f in os.listdir(d) if f.startswith(kind + "_") and f.endswith(".json.gz"))
-            for f in olds[:-keep]:
-                os.remove(os.path.join(d, f))
-        except OSError:
+            n_ += 1
+            mine.append((datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S"), name))
+            mine.sort()
+            if keep > 0:
+                for _t, f in mine[:-keep]:
+                    os.remove(os.path.join(d, f))
+        except (OSError, EOFError):
             pass
+    return n_
 
 
 def rp_list(path):
-    """復元ポイントの一覧（新しい順）：[(日時, 種類, ファイル)]。同じ時刻・種類が両方の場所にあれば1つに"""
+    """バックアップの一覧（新しい順）：[(日時, 種類, ファイル, PC の名前, 版)]。両方の場所にあるものは1つに"""
     seen, out = set(), []
     for d in rp_dirs(path):
         try:
@@ -2321,34 +2389,48 @@ def rp_list(path):
         except OSError:
             continue
         for f in names:
-            if not f.endswith(".json.gz") or "_" not in f:
+            r = rp_parse(f)
+            if not r:
                 continue
-            kind, stamp = f[:-8].split("_", 1)
-            try:
-                t = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S")
-            except ValueError:
+            key = (r[0], r[1], r[2], r[3])
+            if key in seen:
                 continue
-            if (kind, stamp) in seen:
-                continue
-            seen.add((kind, stamp))
-            out.append((t, kind, os.path.join(d, f)))
-    return sorted(out, reverse=True)
+            seen.add(key)
+            out.append((r[1], r[0], os.path.join(d, f), r[2], r[4]))
+    return sorted(out, key=lambda x: x[0], reverse=True)
 
 
-def rp_due(path, now_=None):
-    """保存するときに残すべき定期の復元ポイント（1時間ごと・毎日・毎月）"""
+def rp_due(path, now_=None, pc=None):
+    """いま書くべき定期のバックアップの種類（この PC で、その種類を最後に書いてから期間が過ぎたもの）"""
     now_ = now_ or datetime.datetime.now()
+    pc = pc or rp_pc_name()
     last = {}
-    for t, kind, _f in rp_list(path):
-        last.setdefault(kind, t)
-    due = []
-    if "hourly" not in last or now_ - last["hourly"] >= datetime.timedelta(hours=1):
-        due.append("hourly")
-    if "daily" not in last or last["daily"].date() != now_.date():
-        due.append("daily")
-    if "monthly" not in last or (last["monthly"].year, last["monthly"].month) != (now_.year, now_.month):
-        due.append("monthly")
-    return due
+    for t, kind, _f, p, _v in rp_list(path):
+        if p == pc:
+            last.setdefault(kind, t)
+    return [k for k, sec in RP_PERIODIC
+            if k not in last or (now_ - last[k]).total_seconds() >= sec]
+
+
+def rp_periodic(path, data):
+    """保存したとき：期間が過ぎた種類のバックアップを書く（中身が変わっていなければ書かない）"""
+    for kind in rp_due(path):
+        rp_write(path, kind, data)
+
+
+def rp_on_open(path, raw):
+    """開いたとき（読み替える前の中身のまま）：開いたときのバックアップ、前の版のソフトで保存したファイルなら
+    「バージョンアップの前」（消さない）、閉じていた間に期間が過ぎた種類の定期のバックアップ"""
+    rp_write(path, "open", raw)
+    try:
+        d = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        g = (d.get("view") or {}).get("mn_guard") if isinstance(d, dict) else None
+        ver = str(g.get("ver") or "") if isinstance(g, dict) else ""
+    except (ValueError, AttributeError, UnicodeDecodeError):
+        ver = "?"
+    if not ver or ver_tuple(ver) < ver_tuple(APP_VERSION):
+        rp_write(path, "upgrade", raw, ver=re.sub(r"[^0-9.]", "", ver) or "old")
+    rp_periodic(path, raw)
 
 
 def read_data_file(fp):
@@ -2924,8 +3006,8 @@ def migrate_old_local_files():
                      (".taskmap_google.json", GOOGLE_SETTINGS), (".taskmap_google_token.json", GOOGLE_TOKEN),
                      (".taskmap_backups", BACKUP_DIR)):
         src = os.path.join(home, old)
-        if os.path.exists(new) or not os.path.exists(src):
-            continue
+        if os.path.exists(new) or os.path.exists(new + ".imported") or not os.path.exists(src):
+            continue   # .imported：データファイルへ取り込み済み（もう PC の中には作らない）
         try:
             if os.path.isdir(src):
                 shutil.copytree(src, new)
@@ -3753,8 +3835,7 @@ def run_gui(path=None):
             self.__dict__.setdefault("_core_sigs", {})[ap] = self._core_sig(json.loads(txt))
             self.__dict__.setdefault("_saved_score", {})[ap] = data_score(d_)
             self.__dict__.setdefault("_base_doc", {})[ap] = json.loads(txt)   # 次のまとめの「前回の中身」
-            for kind in rp_due(path):   # 定期の復元ポイント（書き込みは別の処理で）
-                BG_WRITER.put(lambda kind=kind, data=data: rp_write(path, kind, data))
+            BG_WRITER.put(lambda path=path, data=data: rp_periodic(path, data))   # 定期のバックアップ（別の処理で）
             self._groc_local = False
             self._file_sha[ap] = hashlib.sha1(data).hexdigest()
             if mm is self.mm:
@@ -3978,8 +4059,8 @@ def run_gui(path=None):
                     self.__dict__.setdefault("_base_doc", {})[os.path.abspath(p)] = json.loads(raw_.decode("utf-8"))
                 except ValueError:
                     pass
-                if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのまま復元ポイントへ
-                    BG_WRITER.put(lambda p=p, raw_=raw_: rp_write(p, "open", raw_))
+                if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのままバックアップへ
+                    BG_WRITER.put(lambda p=p, raw_=raw_: rp_on_open(p, raw_))
                 try:
                     d0_ = json.loads(raw_.decode("utf-8"))
                     self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(d0_)
@@ -4138,7 +4219,10 @@ def run_gui(path=None):
                 return
             self.on_transition("復元の前", defer=False)
             BG_WRITER.flush()
-            cands = [(t, RP_NAME.get(k, k), fp) for t, k, fp in rp_list(self.path)]
+            cands = []
+            for t, k, fp, pc_, ver_ in rp_list(self.path):   # 種類（どの PC で作ったか。バージョンアップの前は元の版）
+                nm = RP_NAME.get(k, k) + (f" {ver_}" if k == "upgrade" and ver_ else "")
+                cands.append((t, nm + (f"（{pc_}）" if pc_ else ""), fp))
             for t_, bp in self._backup_candidates(self.path):   # 以前からの自動保存の版・同じフォルダのバックアップ
                 kind = "同じフォルダの .backup" if bp == mirror_path(self.path) else "自動保存の版"
                 cands.append((datetime.datetime.fromtimestamp(t_), kind, bp))
@@ -4157,7 +4241,7 @@ def run_gui(path=None):
             tf = ttk.Frame(w)
             tf.pack(fill="both", expand=True, padx=10)
             tv = ttk.Treeview(tf, columns=("t", "k", "w"), show="headings", selectmode="browse")
-            for c, txt, wd in (("t", "日時", 170), ("k", "種類", 170), ("w", "場所", 460)):
+            for c, txt, wd in (("t", "日時", 160), ("k", "種類（作った PC）", 290), ("w", "場所", 350)):
                 tv.heading(c, text=txt)
                 tv.column(c, width=wd, anchor="w")
             sb = ttk.Scrollbar(tf, orient="vertical", command=tv.yview)
@@ -12454,19 +12538,34 @@ def run_gui(path=None):
 
         # ---- 重要期限（免許更新など、絶対に忘れて困るもの） ----
         def _remind_state(self):
-            try:
-                with open(REMIND_STATE, encoding="utf-8") as fp:
-                    d = json.load(fp)
-                return d if isinstance(d, dict) else {}
-            except (OSError, ValueError):
-                return {}
+            """アラーム・重要期限・振り返りの知らせを出した記録（4.5 からデータファイルの view.remind_state。
+            以前この PC に置いていた ~/.mind_navi_reminders.json は1回だけ取り込む）"""
+            v = self.mm.view.get("remind_state")
+            if not isinstance(v, dict):
+                v = {}
+                if os.path.exists(REMIND_STATE):
+                    try:
+                        with open(REMIND_STATE, encoding="utf-8") as fp:
+                            old = json.load(fp)
+                        if isinstance(old, dict):
+                            v = old
+                            self.mm.view["remind_state"] = v
+                            self.dirty = True
+                            self.schedule_autosave(1500)
+                        os.replace(REMIND_STATE, REMIND_STATE + ".imported")   # 次からはデータファイルだけを使う
+                    except (OSError, ValueError):
+                        pass
+            return v
 
         def _save_remind_state(self, d):
-            try:
-                with open(REMIND_STATE, "w", encoding="utf-8") as fp:
-                    json.dump(d, fp, ensure_ascii=False, indent=1)
-            except OSError:
-                pass
+            sig = json.dumps(d, sort_keys=True, ensure_ascii=False, default=str)
+            if sig == json.dumps(self.mm.view.get("remind_state"), sort_keys=True, ensure_ascii=False, default=str) \
+                    and sig == getattr(self, "_remind_sig", None):
+                return   # 変わっていなければ保存しない
+            self._remind_sig = sig
+            self.mm.view["remind_state"] = d
+            self.dirty = True
+            self.schedule_autosave(1500)
 
         def _reminder_maps(self):
             """登録しているすべてのマップ（開いていないものはファイルから読む）: [(ボタン番号, パス, マップ)]"""
@@ -17138,6 +17237,14 @@ def run_gui(path=None):
                 p = self.mm.export_graphml(base + ".graphml")
                 messagebox.showinfo(APP_NAME, f"出力しました:\n{p}")
 
+        def _open_paths(self):
+            """この起動で開いたデータファイル（.json）"""
+            ps = [self.path] if self.path else []
+            for s_ in self.slots:
+                if s_ and s_.get("doc") and s_.get("path") and s_["path"] not in ps:
+                    ps.append(s_["path"])
+            return [p_ for p_ in ps if p_.lower().endswith(".json") and os.path.exists(p_)]
+
         def on_close(self):
             self.commit_edit()
             self.apply_panel()
@@ -17156,6 +17263,13 @@ def run_gui(path=None):
                     self.switch_slot(start)
                 self.record_all_view_states()   # 展開状態・表示位置を記録して次回そのまま開く
                 self.save_settings()
+                for p_ in self._open_paths():   # 閉じたときのバックアップ（最後に保存した中身）
+                    try:
+                        with open(p_, "rb") as f_:
+                            raw_ = f_.read()
+                        BG_WRITER.put(lambda p_=p_, raw_=raw_: rp_write(p_, "close", raw_))
+                    except OSError:
+                        pass
                 BG_WRITER.flush()   # バックアップなどの書き込みが終わるのを待ってから終了
                 self.root.destroy()
 
