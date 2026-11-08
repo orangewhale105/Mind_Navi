@@ -235,6 +235,60 @@ class DataFileTest(unittest.TestCase):
                          [{"id": "x", "v": 1}, {"id": "y", "v": 5}])
         self.assertEqual(app.merge3(base, base, base), base)
 
+    def test_fill_missing_only_adds(self):
+        """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
+        cur = {"a": "今", "b": "", "items": [{"id": "x", "v": "今", "memo": ""}], "tags": ["p"], "new": 1}
+        old = {"a": "昔", "b": "昔", "c": "昔", "items": [{"id": "x", "v": "昔", "memo": "メモ"}, {"id": "y", "v": 1}],
+               "tags": ["p", "q"]}
+        n = app.fill_missing(cur, old)
+        self.assertGreater(n, 0)
+        self.assertEqual(cur["a"], "今")            # 今の入力は変えない
+        self.assertEqual(cur["b"], "昔")            # 空になったものは戻す
+        self.assertEqual(cur["c"], "昔")            # 消えた項目は戻す
+        self.assertEqual(cur["new"], 1)             # 今だけにある項目は消さない
+        self.assertEqual(cur["items"][0], {"id": "x", "v": "今", "memo": "メモ"})
+        self.assertEqual([x["id"] for x in cur["items"]], ["x", "y"])
+        self.assertEqual(cur["tags"], ["p", "q"])
+        import copy
+        snap = copy.deepcopy(cur)
+        self.assertEqual(app.fill_missing(cur, old), 0)
+        self.assertEqual(cur, snap)
+
+    def test_trash_keeps_and_restores_without_overwriting(self):
+        """ゴミ箱：消したノード（下位も）・外したタスクの予定と実施の記録・品を戻せる。今の入力は変えない"""
+        mm = app.MindNavi()
+        g = mm.add_node("目標")
+        t = mm.add_node("タスク", parent=g, sched="2026-11-01", done_dates=["2026-11-01"])
+        c = mm.add_node("下位", parent=t)
+        snap = app.subtree_snapshot(mm, t)
+        self.assertEqual({n["id"] for n in snap["nodes"]}, {t, c})
+        app.trash_add(mm.view, "node", "タスク", snap)
+        for k in (t, c):
+            del mm.nodes[k]
+        mm.edges = [e for e in mm.edges if e["target"] not in (t, c) and e["source"] not in (t, c)]
+        self.assertEqual(app.trash_restore(mm, mm.view["trash"][-1]), 2)
+        self.assertEqual(mm.nodes[t]["done_dates"], ["2026-11-01"])
+        self.assertTrue(any(e["source"] == g and e["target"] == t for e in mm.edges))
+        self.assertEqual(app.trash_restore(mm, mm.view["trash"][-1]), 0)   # 2回目は何も変わらない
+        # タスクの設定を外した → 戻すと予定・実施の記録だけ戻り、そのあと変えた名前は変わらない
+        app.trash_add(mm.view, "task_setting", "タスク", {"node": dict(mm.nodes[t])})
+        mm.nodes[t].pop("sched")
+        mm.nodes[t]["done_dates"] = []
+        mm.nodes[t]["label"] = "新しい名前"
+        app.trash_restore(mm, mm.view["trash"][-1])
+        self.assertEqual(mm.nodes[t]["sched"], "2026-11-01")
+        self.assertEqual(mm.nodes[t]["done_dates"], ["2026-11-01"])
+        self.assertEqual(mm.nodes[t]["label"], "新しい名前")
+        # IN/OUT_Navi の品
+        mm.view["shopping"] = {"items": []}
+        app.trash_add(mm.view, "shop", "本", {"item": {"id": "s1", "name": "本"}})
+        app.trash_restore(mm, mm.view["trash"][-1])
+        app.trash_restore(mm, mm.view["trash"][-1])
+        self.assertEqual(mm.view["shopping"]["items"], [{"id": "s1", "name": "本"}])
+        # ゴミ箱はデータファイルに入って残る
+        d = json.loads(json.dumps(mm.to_dict()))
+        self.assertEqual(len(d["view"]["trash"]), 3)
+
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""
         w = app.BgWriter()
