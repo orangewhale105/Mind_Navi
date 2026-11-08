@@ -20080,7 +20080,7 @@ def run_gui(path=None):
             tf = ttk.Frame(pw)
             pw.add(tf, minsize=80, height=110, stretch="never")   # 月ごとの表は小さめ（境目のドラッグで広げられる）
             cols = [("mon", "月", 80), ("in_v", "購入金額", 110), ("in_n", "購入品数", 80), ("out_v", "売却金額", 110),
-                    ("out_n", "売却品数", 80)]
+                    ("out_n", "売却品数", 80), ("diff_v", "購入−売却", 110)]
             t = self.mtree = ttk.Treeview(tf, columns=[c[0] for c in cols], show="headings", height=3)
             for k, txt, wd in cols:
                 t.heading(k, text=txt)
@@ -20341,6 +20341,7 @@ def run_gui(path=None):
             cs = self.SCOLOR
             line("購入金額（Buy → Hold）", self.yen(P["in_v"]), cs["hold"], True, f"{P['in_n']}品")
             line("売却金額（Clutter → Sold）", self.yen(P["out_v"]), cs["sold"], True, f"{P['out_n']}品")
+            line("購入金額 − 売却金額", self.yen(P["in_v"] - P["out_v"]), "#212529", True)
             c.create_text(X0, y_, anchor="nw", text="Duration（今の状態の日数）", font=(fam, 9, "bold"), fill="#495057")
             y_ += 18
             for k_, n_, _d, col_ in self.STATUSES:
@@ -20478,7 +20479,7 @@ def run_gui(path=None):
             tb, ts = sum(s_["in_v"] for s_ in stats), sum(s_["out_v"] for s_ in stats)
             c.create_text(16, y + 2, anchor="nw", font=(fam, 11, "bold"), fill="#212529",
                           text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入金額 {self.yen(tb)}"
-                               f"　売却金額 {self.yen(ts)}")
+                               f"　売却金額 {self.yen(ts)}　購入−売却 {self.yen(tb - ts)}")
             lx = W - 16
             legend = [("売却金額", "#7048e8", "box")] + \
                      [(n_, cc, "box") for _k, n_, _d, cc in reversed(self.QUAD)]
@@ -20636,7 +20637,7 @@ def run_gui(path=None):
             ysum = lambda xs: self.yen(sum(int(x.get("price") or 0) for x in xs))
             P_ = self.period_stats("すべて")
             self.lbl_total.configure(text=f"購入金額 {self.yen(P_['in_v'])}（{P_['in_n']}品）　売却金額 {self.yen(P_['out_v'])}"
-                                          f"（{P_['out_n']}品）")
+                                          f"（{P_['out_n']}品）　購入−売却 {self.yen(P_['in_v'] - P_['out_v'])}")
             sub = {}
             for x in items:   # 表示中の品のカテゴリ別の小計
                 k_ = x.get("cat") or "（カテゴリなし）"
@@ -20675,9 +20676,11 @@ def run_gui(path=None):
                 row = [st_["in_v"], st_["in_n"], st_["out_v"], st_["out_n"]]
                 tot = [a_ + b_ for a_, b_ in zip(tot, row)]
                 mt.insert("", "end", iid=m_, tags=("sel",) if m_ == self.v_amon.get() else (),
-                          values=[m_.replace("-", "/"), self.yen(row[0]), f"{row[1]}品", self.yen(row[2]), f"{row[3]}品"])
+                          values=[m_.replace("-", "/"), self.yen(row[0]), f"{row[1]}品", self.yen(row[2]), f"{row[3]}品",
+                                  self.yen(row[0] - row[2])])
             mt.insert("", "end", iid="__sum__", tags=("sum",),
-                      values=["総計", self.yen(tot[0]), f"{tot[1]}品", self.yen(tot[2]), f"{tot[3]}品"])
+                      values=["総計", self.yen(tot[0]), f"{tot[1]}品", self.yen(tot[2]), f"{tot[3]}品",
+                              self.yen(tot[0] - tot[2])])
             if getattr(self, "nav", None) is not None:   # 選んでいるセルの枠
                 if self.nav.cur and not t.exists(self.nav.cur[0]):
                     self.nav.cur = None
