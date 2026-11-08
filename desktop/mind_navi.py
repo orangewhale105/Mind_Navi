@@ -11028,14 +11028,7 @@ def run_gui(path=None):
                 for xx in (x1 + wdt / 2, x2 - wdt / 2):   # 縁取りの縦線
                     c.create_line(xx, y1, xx, y2, fill=col, width=wdt, tags=tags)
             xm = x2 - 8
-            if q and y2 - y1 >= 16 and x2 - x1 >= 70:   # 入る大きさなら頭文字の札（コ・オ・ス・デ）
-                fq = self.font(7, bold=True)
-                ch = QUAD_INITIAL[q]
-                w_ = fq.measure(ch) + 6
-                c.create_rectangle(x2 - 8 - w_, y2 - 14, x2 - 8, y2 - 1, fill=QUAD_COLOR[q], outline="", tags=tags)
-                c.create_text(x2 - 8 - w_ / 2, y2 - 7.5, text=ch, font=fq, fill="#ffffff", tags=tags)
-                if y2 - y1 < 30:
-                    xm = x2 - 10 - w_
+            # （4象限の頭文字 C・O・S・D の札は廃止：分類は塗りの色で分かる。2026-11-08 利用者の指示）
             if has_memo(n) and x2 - x1 >= 40 and n.get("id"):   # 📝 メモあり（ダブルクリックでメモを開く）
                 nid_ = n.get("_base") or n["id"]
                 yc_ = y1 + min(8, (y2 - y1) / 2)
@@ -19301,9 +19294,8 @@ def run_gui(path=None):
             t.tag_configure("new", foreground="#1c7ed6")
             t.tag_configure("delcol", foreground="#adb5bd")
             t.tag_configure("hl", background="#fff3bf")
-            t.tag_configure("st_hold", foreground="#adb5bd")      # Hold：うすい灰色
-            t.tag_configure("st_clutter", foreground="#c92a2a")   # Clutter：赤
-            t.tag_configure("st_sold", foreground="#7048e8")      # Sold：紫
+            for k_, _n, _d, col_ in self.STATUSES:   # 状態は行の地の色で分かるように（印は使わない）
+                t.tag_configure("st_" + k_, background=mix(col_, 0.86), foreground="#212529")
             t.tag_configure("subtot", background="#f1f3f5", foreground="#495057", font=(self.app.fam_base, 9, "bold"))
             t.tag_configure("grand", background="#e7f5ff", foreground="#1864ab", font=(self.app.fam_base, 10, "bold"))
             t.tag_configure("sechead", background="#343a40", foreground="#ffffff", font=(self.app.fam_base, 10, "bold"))
@@ -20070,7 +20062,7 @@ def run_gui(path=None):
             self.cb_amon = ttk.Combobox(top, textvariable=self.v_amon, state="readonly", width=10)
             self.cb_amon.pack(side="left", padx=4)
             self.cb_amon.bind("<<ComboboxSelected>>", lambda ev: self.refresh())
-            ttk.Label(top, text="円の色の札＝状態（W・B・H・C・S）　円の大きさ＝価格　4以上を「高」　円を左の札へドラッグで状態を変更",
+            ttk.Label(top, text="円の色＝状態（下の凡例）　円の大きさ＝価格　4以上を「高」　円を左の札へドラッグで状態を変更",
                       foreground="#868e96").pack(side="left", padx=8)
             pw = tk.PanedWindow(f, orient="vertical", sashwidth=6, bg="#dee2e6", bd=0)
             pw.pack(fill="both", expand=True, pady=(6, 0))
@@ -20181,10 +20173,9 @@ def run_gui(path=None):
             c.create_text(18, (T + B) / 2, text="人\n生\n価\n値\n度\n↑", font=(fam, 9, "bold"), fill="#343a40")
             c.create_text(L, 12, anchor="w", font=(fam, 11, "bold"), fill="#212529",
                           text=f"{mon.replace('-', '年', 1)}月 の IN/OUT_Navi マップ" if mon != "すべて" else "全期間の IN/OUT_Navi マップ")
-            lgx, lgy = L, B + 46   # 状態の凡例（色と頭文字）：横軸の名前の下
+            lgx, lgy = L, B + 46   # 状態の凡例（色だけ）：横軸の名前の下
             for k_, n_, _d, col_ in self.STATUSES:
-                c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=col_, outline="")
-                c.create_text(lgx + 6, lgy, text=n_[0], font=(fam, 7, "bold"), fill="#ffffff")
+                c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=mix(col_, 0.55), outline=col_, width=2)
                 tt_ = c.create_text(lgx + 15, lgy, anchor="w", text=n_, font=(fam, 9, "bold"), fill=col_)
                 lgx = c.bbox(tt_)[2] + 12
             rows = [x for x in self.data["items"] if mon == "すべて" or self.month_of(x) == mon]
@@ -20215,32 +20206,9 @@ def run_gui(path=None):
                     tg = ("bub", "bub:" + x["id"])
                     hl = x["id"] == self._hl
                     st = self.status(x)
-                    if st == "hold":   # Hold：うすい灰色の小さめの円で目立たせない
-                        r = max(3, r * 0.7)
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#fff4e6", outline="#212529" if hl else self.SCOLOR["hold"],
-                                      width=3 if hl else 1.5, dash=() if hl else (2, 2), tags=tg)
-                    elif st == "buy":
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(col, 0.35), outline="#212529" if hl else col,
-                                      width=4 if hl else 2, tags=tg)
-                    elif st == "sold":   # Sold：紫のひし形（強調の輪の位置用に見えない円も置く）
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="", outline="", tags=tg)
-                        c.create_polygon(cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy, fill=mix("#7048e8", 0.75),
-                                         outline="#212529" if hl else "#7048e8", width=4 if hl else 2, tags=tg)
-                    elif st == "clutter":   # Clutter：赤い ✕ の付いた白い円
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="#212529" if hl else "#e03131",
-                                      width=4 if hl else 1.5, dash=() if hl else (2, 2), tags=tg)
-                        k_ = r * 0.55
-                        for sx_ in (1, -1):
-                            c.create_line(cx - k_, cy - k_ * sx_, cx + k_, cy + k_ * sx_, fill=mix("#e03131", 0.5), width=1.5, tags=tg)
-                    else:   # Wants：水色の点線の白い円
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="#212529" if hl else self.SCOLOR["wants"],
-                                      width=4 if hl else 2, dash=() if hl else (3, 2), tags=tg)
-                    if r >= 6:   # 状態の札（色つきの頭文字）：W・B・H・C・S
-                        bx_, by_ = cx + r * 0.72, cy - r * 0.72
-                        rb_ = 7 if r >= 12 else 6
-                        c.create_oval(bx_ - rb_, by_ - rb_, bx_ + rb_, by_ + rb_, fill=self.SCOLOR[st], outline="#ffffff",
-                                      width=1.5, tags=tg)
-                        c.create_text(bx_, by_, text=self.SNAME[st][0], font=(fam, 7, "bold"), fill="#ffffff", tags=tg)
+                    scol = self.SCOLOR[st]   # 状態は色だけで表す（印・形は使わない。2026-11-08 利用者の指示）
+                    c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(scol, 0.6), outline="#212529" if hl else scol,
+                                  width=4 if hl else 2.5, tags=tg)
                     nm = x.get("name", "")
                     fsz = 8 if r >= 16 else 7
                     room = max(sub - 4, r * 2)
@@ -20252,9 +20220,7 @@ def run_gui(path=None):
                         lab = lab[:-1] + "…" if len(lab) > 1 else lab
                     if room >= 18:   # 名前は円の中（小さい円は下）に
                         ty = cy if r >= 13 else cy + r + 6
-                        skip_ = st in ("hold", "clutter")
-                        c.create_text(cx, ty, text=lab, font=(fam, fsz, "normal" if skip_ else "bold"),
-                                      fill="#adb5bd" if skip_ else "#212529" if st in ("buy", "sold") else "#495057", tags=tg)
+                        c.create_text(cx, ty, text=lab, font=(fam, fsz, "bold"), fill="#212529", tags=tg)
                     self._bubbles.append(x["id"])
             if self._hl:   # 選んでいる品：赤い二重の輪と名前の札で強調
                 for it_ in c.find_withtag("bub:" + self._hl):
@@ -20569,14 +20535,14 @@ def run_gui(path=None):
 
             def item_row(x):
                 st = self.status(x)
-                tg_ = ("st_" + st,) if st in ("hold", "clutter", "sold") else ("q_" + self.quad(x),)
+                tg_ = ("st_" + st,)
                 if x["id"] == self._hl:
                     tg_ = tg_ + ("hl",)
                 sl = x.get("sell")
                 has_sl = sl not in (None, "")
                 r_ = self.ratio(x)
                 dur = self.duration(x, today)
-                vals = {"del": "✕", "status": "⠿ " + self.SNAME[st], "name": x.get("name", ""),
+                vals = {"del": "✕", "status": self.SNAME[st], "name": x.get("name", ""),
                         "cat": x.get("cat", "") or "（選ぶ）", "gap": "",
                         "life": self.stars(x.get("life")), "value": self.stars(x.get("value")),
                         "price": self.yen(x.get("price") or 0) if x.get("price") else "―",
