@@ -10,7 +10,7 @@
 
 ## 報告に必ず付ける手順（毎回そのまま書く。PR の番号・リンク、版番号、APK のファイル名は今回のものに）
 1. **取り込み**：プルリクエストのリンクを開き、緑の「Merge pull request」→「Confirm merge」。紫の「Merged」が出れば完了。
-2. **配布ファイルを作る**：https://github.com/orangewhale105/Mind_Navi →「Actions」→ 左の「配布ファイルを作る」→ 右の「Run workflow」→ 緑の「Run workflow」。黄色い丸が緑のチェックになれば完成（3〜5分）。赤い × なら「エラーが出た」と Claude に伝える。
+2. **配布ファイルができるのを待つ**：取り込むと自動で作り始める（2026-11-08 から。PC版・Android版のプログラムが変わったときだけ）。https://github.com/orangewhale105/Mind_Navi →「Actions」で、いちばん上の「配布ファイルを作る」の黄色い丸が緑のチェックになれば完成（3〜5分）。赤い × なら「エラーが出た」と Claude に伝える。プログラムが変わらない取り込み（文書だけなど）では作られないので、その回は「ダウンロードし直す必要はありません」と書く。
 3. **ダウンロード**：リポジトリのトップページ右側の「Releases」→ いちばん上（Latest）の「Assets」から、PC版 `mind_navi.py` と Android版 `MindNaviShopping_v◯.apk` を押す。スマホはブラウザで同じページを開いて APK を押す。
 4. **入れ替え**：PC版はダウンロードした `mind_navi.py` を今のものと置き換えて起動（データファイルはそのまま使える）。Android版は APK を開いてインストール（上書きできる）。Android版を変えていないときは「Android版は変更なし（入れ直し不要）」と書く。
 

@@ -605,7 +605,7 @@ bash tools/build_apk.sh          # 出力：/tmp/mind_navi_apkbuild/MindNaviShop
 - APK をスマホで開き、「提供元不明のアプリ」を許可してインストール。Play プロテクトの警告が出たら「インストールする」。
 
 ### 11.6 配布ファイルの作成とダウンロード（GitHub Releases）
-- `.github/workflows/release.yml`（名前「配布ファイルを作る」）。GitHub の「Actions」→「配布ファイルを作る」→「Run workflow」で、自動テスト → 署名付き APK の作成 → Releases ページへの掲載を行う。
+- `.github/workflows/release.yml`（名前「配布ファイルを作る」）。**main に取り込むと、PC版・Android版のプログラムが変わっていれば自動で作る**（2026-11-08。3.8 を取り込んだのに作り直しておらず、利用者が古い 3.7 をダウンロードしてしまったため）。手で作るときは GitHub の「Actions」→「配布ファイルを作る」→「Run workflow」で、自動テスト → 署名付き APK の作成 → Releases ページへの掲載を行う。
 - 置くファイル：`mind_navi.py`（PC版。Windows・Mac 共通）と `MindNaviShopping_v<versionName>.apk`（Android版）。
 - 版の名前（タグ）は `pc<PC版のVERSION>-android<versionName>`（例 `pc3.6-android1.2`）。同じ版でもう一度作ると、ファイルを差し替える。いつもいちばん新しく作ったものを「Latest」にする。
 - ダウンロード：リポジトリのページ右側の「Releases」→ 版を開き「Assets」のファイルを押す。
