@@ -189,31 +189,51 @@ class DataFileTest(unittest.TestCase):
                                          "groceries": {"items": [{}, {}]}}}
         self.assertEqual(app.data_score(d), {"nodes": 3, "shop": 3, "shop_info": 3, "groc": 2})
 
-    def test_shopping_protect_on_save(self):
-        """保存の前の守り：入力が消えた・品が減った（画面で消した数より多く）ときは前の中身から戻す"""
-        import copy
-        old = {"v": 4, "items": [{"id": f"i{k}", "name": f"品{k}", "life": 6, "value": 1, "price": 100,
-                                  "status": "hold", "status_log": [{"s": "buy", "d": "2026-01-01"}, {"s": "hold", "d": "2026-02-01"}]}
-                                 for k in range(8)]}
-        wiped = copy.deepcopy(old)
-        for x in wiped["items"]:
-            x.update(life=4, value=4, status="wants", status_log=[{"s": "wants", "d": "2026-11-08"}])
-        self.assertEqual(app.shopping_protect(wiped, old), (8, 0))
-        self.assertTrue(all(x["status"] == "hold" and x["life"] == 6 for x in wiped["items"]))
-        emptied = {"v": 4, "items": []}
-        self.assertEqual(app.shopping_protect(emptied, old), (0, 8))
-        self.assertEqual(len(emptied["items"]), 8)
-        deleted_on_screen = {"v": 4, "items": copy.deepcopy(old["items"][:2])}   # 画面で6品消した
-        self.assertEqual(app.shopping_protect(deleted_on_screen, old, deleted=6), (0, 0))
-        self.assertEqual(len(deleted_on_screen["items"]), 2)
-        normal = copy.deepcopy(old)
-        normal["items"][0]["status"] = "sold"
-        self.assertEqual(app.shopping_protect(normal, old), (0, 0))
-
     def test_app_version_matches_header(self):
         with open(APP, encoding="utf-8") as f:
             head = f.readline() + f.readline() + f.readline()
         self.assertIn(f"VERSION {app.APP_VERSION} ", head)
+
+    def test_merge3_two_pcs_keep_both(self):
+        """2台の PC：学校で書いた振り返り・完了・IN/OUT_Navi と、家で変えた内容がどちらも残る（上書きで消えない）"""
+        base = {"nodes": [{"id": "t1", "label": "論文", "status": "todo", "done_dates": []},
+                          {"id": "t2", "label": "運動", "status": "todo"}],
+                "edges": [{"source": "r", "target": "t1"}],
+                "view": {"reviews": {"D:2026-11-06": "6日の振り返り"},
+                         "shopping": {"v": 4, "items": [{"id": "a", "name": "本", "status": "wants", "life": 4}]}}}
+        import copy
+        school = copy.deepcopy(base)   # ほかの PC（ファイルに保存済み）
+        school["view"]["reviews"]["D:2026-11-07"] = "7日の振り返り（学校で書いた）"
+        school["nodes"][0]["status"] = "done"
+        school["view"]["shopping"]["items"][0].update(status="hold", life=6)
+        school["view"]["shopping"]["items"].append({"id": "b", "name": "靴", "status": "buy"})
+        home = copy.deepcopy(base)     # 開いたままの PC
+        home["view"]["reviews"]["D:2026-11-08"] = "8日の振り返り（家で書いた）"
+        home["nodes"][1]["label"] = "運動（30分）"
+        home["nodes"].append({"id": "t3", "label": "新しいタスク", "status": "todo"})
+        m = app.merge3(base, home, school)
+        self.assertEqual(set(m["view"]["reviews"]), {"D:2026-11-06", "D:2026-11-07", "D:2026-11-08"})
+        nodes = {n["id"]: n for n in m["nodes"]}
+        self.assertEqual(nodes["t1"]["status"], "done")
+        self.assertEqual(nodes["t2"]["label"], "運動（30分）")
+        self.assertIn("t3", nodes)
+        items = {x["id"]: x for x in m["view"]["shopping"]["items"]}
+        self.assertEqual((items["a"]["status"], items["a"]["life"]), ("hold", 6))
+        self.assertIn("b", items)
+        self.assertEqual(m["edges"], base["edges"])
+
+    def test_merge3_deletions_and_conflicts(self):
+        base = {"items": [{"id": "x", "v": 1}, {"id": "y", "v": 1}], "s": "a", "tags": ["p", "q"]}
+        ours = {"items": [{"id": "x", "v": 1}], "s": "b", "tags": ["p", "q", "r"]}          # y を消した
+        theirs = {"items": [{"id": "x", "v": 2}, {"id": "y", "v": 1}], "s": "c", "tags": ["q"]}  # p を外した
+        m = app.merge3(base, ours, theirs)
+        self.assertEqual(m["items"], [{"id": "x", "v": 2}])   # y はこの PC で消した。x はほかの変更を使う
+        self.assertEqual(m["s"], "b")                          # 両方が変えた → この PC
+        self.assertEqual(m["tags"], ["q", "r"])
+        changed = {"items": [{"id": "x", "v": 1}, {"id": "y", "v": 5}]}   # 消した品をほかで変えていた → 残す
+        self.assertEqual(app.merge3(base, {"items": [{"id": "x", "v": 1}]}, changed)["items"],
+                         [{"id": "x", "v": 1}, {"id": "y", "v": 5}])
+        self.assertEqual(app.merge3(base, base, base), base)
 
     def test_background_writer_keeps_order(self):
         """バックアップなどの書き込みは別の処理で、頼んだ順に行い、flush で書き終わりを待てる"""

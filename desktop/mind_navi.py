@@ -2377,26 +2377,68 @@ def data_score(d):
             "shop_info": sum(1 for x in items if shop_informed(x)), "groc": len(gr.get("items") or [])}
 
 
-def shopping_protect(new_sh, old_sh, deleted=0):
-    """保存の前の守り（4.3）：IN/OUT_Navi の入力や品が、前に保存した中身（old_sh）より大きく減っていたら戻す。
-    ・入力（状態・★・売却価格など）のある品が半分未満になった → 消えた入力を前の中身から補う（shopping_fill_lost）
-    ・品の数が半分未満になり、画面で削除した数（deleted）より多く減った → 消えた品を前の中身から戻す
-    戻した数 (入力を補った品, 戻した品) を返す。new_sh はその場で直す"""
+_MISSING = object()
+
+
+def _merge_key(x):
+    """リストの中の要素を見分けるかぎ：id のある辞書は id、ほかは中身そのもの"""
+    if isinstance(x, dict) and "id" in x:
+        return ("id", str(x["id"]))
+    return ("v", json.dumps(x, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def merge3(base, ours, theirs):
+    """3方向のまとめ（4.4）：前回読んだ・保存した中身 base、この PC の今の中身 ours、ファイルの今の中身 theirs（ほかの PC・
+    スマホが書いたもの）を、どちらの変更も消さずにまとめる。
+    ・片方だけが変えた所は、その変更を使う。両方が同じ所を違う値に変えたときは、この PC（ours）を使う。
+    ・辞書は項目ごと、id のある品・ノードのリストは品ごとにまとめる（どちらかで足した品はどちらも残る）。
+    ・消したもの：片方が消して、もう片方が変えていなければ消す（その PC での削除の意図を守る）。
+      もう片方が変えていたら残す（入力を消さない）"""
     import copy as _copy
-    if not isinstance(new_sh, dict) or not isinstance(old_sh, dict):
-        return 0, 0
-    new_items = [x for x in new_sh.get("items") or [] if isinstance(x, dict)]
-    old_items = [x for x in old_sh.get("items") or [] if isinstance(x, dict)]
-    n_fill = n_add = 0
-    oi = sum(1 for x in old_items if shop_informed(x))
-    if oi >= 5 and sum(1 for x in new_items if shop_informed(x)) < oi * 0.5:
-        n_fill = shopping_fill_lost(new_sh, old_sh)
-    have = {x.get("id") for x in new_items}
-    missing = [x for x in old_items if x.get("id") not in have]
-    if len(old_items) >= 5 and len(new_items) < len(old_items) * 0.5 and len(missing) > deleted:
-        new_sh.setdefault("items", []).extend(_copy.deepcopy(missing))
-        n_add = len(missing)
-    return n_fill, n_add
+    if ours == theirs:
+        return _copy.deepcopy(ours)
+    if ours == base:
+        return _copy.deepcopy(theirs)
+    if theirs == base:
+        return _copy.deepcopy(ours)
+    if isinstance(ours, dict) and isinstance(theirs, dict):
+        bd = base if isinstance(base, dict) else {}
+        out = {}
+        for k in list(ours) + [k for k in theirs if k not in ours]:
+            ov, tv, bv = ours.get(k, _MISSING), theirs.get(k, _MISSING), bd.get(k, _MISSING)
+            if ov is _MISSING:
+                if bv is not _MISSING and tv == bv:
+                    continue   # この PC で消した（ほかでは変えていない）
+                out[k] = _copy.deepcopy(tv)
+            elif tv is _MISSING:
+                if bv is not _MISSING and ov == bv:
+                    continue   # ほかの PC で消した（この PC では変えていない）
+                out[k] = _copy.deepcopy(ov)
+            else:
+                out[k] = merge3(None if bv is _MISSING else bv, ov, tv)
+        return out
+    if isinstance(ours, list) and isinstance(theirs, list):
+        bm = {_merge_key(x): x for x in (base if isinstance(base, list) else [])}
+        om = {_merge_key(x): x for x in ours}
+        tm = {_merge_key(x): x for x in theirs}
+        out, seen = [], set()
+        for x in list(ours) + list(theirs):   # 並びはこの PC の順、ほかで足したものは後ろに
+            k = _merge_key(x)
+            if k in seen:
+                continue
+            seen.add(k)
+            if k in om and k in tm:
+                out.append(merge3(bm.get(k), om[k], tm[k]) if k[0] == "id" else _copy.deepcopy(om[k]))
+            elif k in om:
+                if k in bm and om[k] == bm[k]:
+                    continue   # ほかの PC で消した
+                out.append(_copy.deepcopy(om[k]))
+            else:
+                if k in bm and tm[k] == bm[k]:
+                    continue   # この PC で消した
+                out.append(_copy.deepcopy(tm[k]))
+        return out
+    return _copy.deepcopy(ours)   # 両方が同じ所を違う値に変えた → この PC の値
 
 
 def shopping_fill_lost(cur, old):
@@ -3550,47 +3592,44 @@ def run_gui(path=None):
                 return None
 
         def adopt_outside_groceries(self, path=None, quiet=False):
-            """スマホアプリ（Googleドライブ）で買い物リストだけが書きかえられていたら、その内容を取り込んで続ける。
-            戻り値：取り込んだら True（ほかの部分も変わっていたら False）"""
+            """ほかの PC・スマホがファイルを保存していたら、その変更をこの PC に取り込む（4.4：買い物リストだけでなく全部。
+            3方向でまとめるので、この PC の入力も消えない）。取り込んだら True"""
             path = path or self.path
-            if not path or not self._changed_outside(path):
+            if not path or not path.lower().endswith(".json") or not os.path.exists(path):
                 return False
+            if self._busy_editing() or self._typing_now():
+                return False   # 入力の途中は待つ
             ap = os.path.abspath(path)
             try:
-                with open(ap, encoding="utf-8") as fp:
-                    disk = json.load(fp)
-            except (OSError, ValueError):
+                with open(ap, "rb") as f:
+                    raw = f.read()
+            except OSError:
                 return False
-            sig = getattr(self, "_core_sigs", {}).get(ap)
-            if not sig or self._core_sig(disk) != sig:
-                return False   # 買い物リスト以外も変わっている → これまでどおり確認
-            if getattr(self, "_groc_local", False):
-                mine = self.mm.view.get("groceries") or {}
-                theirs = (disk.get("view") or {}).get("groceries") or {}
-                merged = dict(theirs)   # 両方で変えた：品・定番は id でまとめ、購入の記録は両方を残す
-                for k in ("items", "staples"):
-                    ids = {x.get("id") for x in theirs.get(k, [])}
-                    merged[k] = list(theirs.get(k, [])) + [x for x in mine.get(k, []) if x.get("id") not in ids]
-                hs = {json.dumps(h, sort_keys=True) for h in theirs.get("history", [])}
-                merged["history"] = list(theirs.get("history", [])) + [h for h in mine.get("history", [])
-                                                                       if json.dumps(h, sort_keys=True) not in hs]
-                self.mm.view["groceries"] = merged
-                self.dirty = True
-            else:
-                self.mm.view["groceries"] = (disk.get("view") or {}).get("groceries") or {}
-            self._known_mtime[ap] = os.path.getmtime(ap)
-            self._groc_local = False
-            gw = getattr(self, "grocery_win", None)
+            sha = hashlib.sha1(raw).hexdigest()
+            if sha == self._file_sha.get(ap):
+                return False
             try:
-                if gw is not None and gw.win.winfo_exists():
-                    gw.data = self.mm.view.setdefault("groceries", {"items": [], "staples": [], "history": []})
-                    for k_ in ("items", "staples", "history"):
-                        gw.data.setdefault(k_, [])
-                    gw.refresh()
-            except Exception:
+                theirs = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                return False   # 書きかけ（同期の途中）：次の確認で
+            base = (getattr(self, "_base_doc", None) or {}).get(ap) or {}
+            ours = self.mm.to_dict()
+            merged = merge3(base, ours, theirs)
+            self._apply_doc(self.mm, merged)
+            self._base_doc[ap] = theirs
+            self._file_sha[ap] = sha
+            try:
+                self._known_mtime[ap] = os.path.getmtime(ap)
+            except OSError:
                 pass
+            self.__dict__.setdefault("_saved_score", {})[ap] = data_score(theirs)
+            if merged != theirs:   # この PC の変更もある → 保存して両方をファイルに
+                self.dirty = True
+                self.schedule_autosave()
+            self._groc_local = False
+            self._after_merge_ui()
             if not quiet:
-                self.set_status("スマホの買い物リストの変更を取り込みました")
+                self.set_status("ほかの PC・スマホの変更を取り込みました")
             return True
 
         def _write_doc(self, path, mm, history=None):
@@ -3599,9 +3638,7 @@ def run_gui(path=None):
             1時間ごと・毎日・毎月の復元ポイントも残す"""
             ap = os.path.abspath(path)
             d_ = mm.to_dict()
-            if not getattr(self, "_guard_skip", False):   # 復元ポイントから戻したときは守りを通さない
-                d_ = self._protect_before_save(path, ap, mm, d_)
-            self._guard_skip = False
+            d_ = self._merge_outside(path, ap, mm, d_)   # ほかの PC・スマホの変更があれば、上書きせずにまとめる
             sc_ = data_score(d_)
             fp_ = {"ver": APP_VERSION, "at": now(), **sc_}   # 保存したときの数（次に開いたときに減っていないか比べる）
             mm.view["mn_guard"] = fp_
@@ -3624,6 +3661,7 @@ def run_gui(path=None):
             self._known_mtime[ap] = os.path.getmtime(path)
             self.__dict__.setdefault("_core_sigs", {})[ap] = self._core_sig(json.loads(txt))
             self.__dict__.setdefault("_saved_score", {})[ap] = data_score(d_)
+            self.__dict__.setdefault("_base_doc", {})[ap] = json.loads(txt)   # 次のまとめの「前回の中身」
             for kind in rp_due(path):   # 定期の復元ポイント（書き込みは別の処理で）
                 BG_WRITER.put(lambda kind=kind, data=data: rp_write(path, kind, data))
             self._groc_local = False
@@ -3633,44 +3671,58 @@ def run_gui(path=None):
             if history is not None:
                 self._save_undo(path, history)
 
-        def _protect_before_save(self, path, ap, mm, d_):
-            """保存の前の守り（4.3）：IN/OUT_Navi の入力・品が前に保存した中身より大きく減っていたら、前の中身から戻す。
-            戻したら知らせ、前の中身は「保存前の退避」の復元ポイントにも残す"""
-            prev = (getattr(self, "_saved_score", None) or {}).get(ap)
-            if not prev or not os.path.exists(path):
-                return d_
-            now_ = data_score(d_)
-            if not ((prev.get("shop_info", 0) >= 5 and now_["shop_info"] < prev["shop_info"] * 0.5) or
-                    (prev.get("shop", 0) >= 5 and now_["shop"] < prev["shop"] * 0.5)):
+        def _merge_outside(self, path, ap, mm, d_):
+            """保存の前（4.4）：ファイルが前回読んだ・保存したときから変わっていたら（ほかの PC・スマホが保存した）、
+            上書きせずに3方向でまとめる（merge3）。まとめた中身をこの PC にも反映し、まとめた中身 d_ を返す"""
+            if not path.lower().endswith(".json") or not os.path.exists(path):
                 return d_
             try:
                 with open(path, "rb") as f:
                     raw = f.read()
-                old = json.loads(raw.decode("utf-8"))
-            except (OSError, ValueError):
+            except OSError:
                 return d_
-            old_sh = (old.get("view") or {}).get("shopping")
-            cur_sh = mm.view.setdefault("shopping", {})
-            n_fill, n_add = shopping_protect(cur_sh, old_sh, getattr(self, "_shop_deleted", 0) if mm is self.mm else 0)
-            if not (n_fill or n_add):
-                return d_
-            rp_write(path, "guard", raw)
-            w_ = getattr(self, "shop_win", None)
-            if w_ is not None and mm is self.mm:   # 開いている IN/OUT_Navi も直したデータで描き直す
-                try:
-                    w_.data = cur_sh
-                    w_.refresh()
-                except Exception:
-                    pass
-            msg = (f"IN/OUT_Navi のデータが大きく減ろうとしたので、前に保存した中身から戻しました"
-                   f"（入力を補った品 {n_fill}・戻した品 {n_add}）。")
-            self.set_status("⚠ " + msg)
+            if hashlib.sha1(raw).hexdigest() == self._file_sha.get(ap):
+                return d_   # 前回のまま：そのまま保存してよい
             try:
-                messagebox.showwarning(APP_NAME, msg + "\n\n意図して消した場合は、IN/OUT_Navi の ✕・Delete で消してください"
-                                                   "（画面で消した品は戻しません）。", parent=self.root)
-            except tk.TclError:
-                pass
+                theirs = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                return d_   # 書きかけなどで読めない：この PC の中身で保存（前の中身は復元ポイントに残る）
+            base = (getattr(self, "_base_doc", None) or {}).get(ap) or {}
+            merged = merge3(base, d_, theirs)
+            self._apply_doc(mm, merged)
+            if mm is self.mm:
+                self.root.after_idle(self._after_merge_ui)
+                self.set_status("ほかの PC・スマホの変更とまとめて保存しました（どちらの入力も残しています）")
             return mm.to_dict()
+
+        def _apply_doc(self, mm, d):
+            """まとめた中身 d を、今のマップ mm にその場で反映する（開いている IN/OUT_Navi・振り返りなどの画面が
+            持っているデータの入れ物は同じものを使い続けるので、画面の入力が別の入れ物に書かれて消えることがない）"""
+            new = MindNavi.from_dict(d)
+            for k, v in list(new.view.items()):
+                old = mm.view.get(k)
+                if isinstance(v, dict) and isinstance(old, dict):
+                    old.clear()
+                    old.update(v)
+                    new.view[k] = old
+            mm.nodes, mm.edges, mm.view = new.nodes, new.edges, new.view
+            mm._edge_cache = None
+
+        def _after_merge_ui(self):
+            """まとめた後の画面の描き直し（開いている画面も）"""
+            self._mod = getattr(self, "_mod", 0) + 1
+            try:
+                self.refresh_focus_list()
+                self.redraw()
+                for attr in ("shop_win", "grocery_win"):
+                    w = getattr(self, attr, None)
+                    if w is not None and w.win.winfo_exists() and not getattr(w, "_cell", None):
+                        w.refresh()
+                rw = getattr(self, "review_win", None)
+                if rw is not None and rw.win.winfo_exists():
+                    rw._fill_days_box()
+            except Exception:
+                pass
 
         def _check_guard_on_open(self):
             """開いたとき（4.3）：前回 Mind_Navi で保存したときの数より大きく減っていたら知らせて、戻す画面を出す
@@ -3781,9 +3833,7 @@ def run_gui(path=None):
                     path, mm, dirty = doc["path"], doc["mm"], doc["dirty"]
                 if not dirty or not path or not path.lower().endswith(".json"):
                     continue   # 無題のマップはバックアップだけ（保存先は［名前を付けて保存］で決める）
-                if self._changed_outside(path) and not (j == self.cur and self.adopt_outside_groceries(path, quiet=True)):
-                    warn.append(os.path.basename(path))
-                    continue   # 別の場所での変更を上書きしない（バックアップには残る）
+                # （4.4）ほかの PC・スマホがファイルを変えていても止めない：_write_doc で両方の変更をまとめてから保存する
                 try:
                     if j == self.cur:
                         self.mm.view.update(style=self.style, auto_layout=self.v_auto.get())
@@ -3833,6 +3883,10 @@ def run_gui(path=None):
                 with open(p, "rb") as fb_:
                     raw_ = fb_.read()
                 self._file_sha[os.path.abspath(p)] = hashlib.sha1(raw_).hexdigest()
+                try:   # 3方向のまとめの「前回の中身」（ほかの PC の変更と合わせるときに使う）
+                    self.__dict__.setdefault("_base_doc", {})[os.path.abspath(p)] = json.loads(raw_.decode("utf-8"))
+                except ValueError:
+                    pass
                 if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのまま復元ポイントへ
                     BG_WRITER.put(lambda p=p, raw_=raw_: rp_write(p, "open", raw_))
                 try:
@@ -4151,7 +4205,6 @@ def run_gui(path=None):
                 if not n:
                     return msg
             self.dirty = True
-            self._guard_skip = True   # 戻した中身はそのまま保存する（保存の守りを通さない）
             self.touch()
             self.redraw()
             self.on_transition("復元", defer=False)
