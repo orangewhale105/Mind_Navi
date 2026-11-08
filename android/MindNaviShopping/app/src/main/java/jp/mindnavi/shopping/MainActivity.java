@@ -1,4 +1,4 @@
-// Mind_Navi 買い物リスト（Android）  VERSION 1.3（versionCode 4）  最終更新日 2026-11-08
+// Mind_Navi 買い物リスト（Android）  VERSION 1.4（versionCode 5）  最終更新日 2026-11-08
 package jp.mindnavi.shopping;
 
 import android.app.Activity;
@@ -60,6 +60,8 @@ public class MainActivity extends Activity {
     private Uri fileUri;
     private Map<String, Object> groceries;   // view → groceries（items・staples・history）
     private boolean showStaples = false;
+    /** 入力の途中の品（並べ替えを待っている品）。その行を入力し終えるか、ほかの品にふれる・画面を切り替えると並べ替える（PC版と同じ） */
+    private String pendingId = null;
     private boolean pendingSave = false;
 
     private LinearLayout listBox;
@@ -111,6 +113,7 @@ public class MainActivity extends Activity {
         tabList.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+            sortPendingData();   // 画面を切り替える → 入力中の品も並べ替え
             showStaples = false;
             render();
         }
@@ -118,6 +121,7 @@ public class MainActivity extends Activity {
         tabStaples.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+            sortPendingData();
             showStaples = true;
             render();
         }
@@ -187,6 +191,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        if (sortPendingData()) {   // アプリを離れる → 入力中の品も並べ替え
+            scheduleSave();
+        }
         if (pendingSave) {   // 画面を離れるときは、待たずに保存
             ui.removeCallbacks(saveTask);
             saveNow();
@@ -402,6 +409,7 @@ public class MainActivity extends Activity {
     }
 
     private void toggleBought(Map<String, Object> x, boolean on) {
+        inputOn(x);   // 購入のチェック：すぐには動かさない（ほかの品にふれると並べ替え）
         String today = LocalDate.now().toString();
         x.put("bought", on);
         List<Object> hist = Json.arr(groceries, "history");
@@ -430,6 +438,14 @@ public class MainActivity extends Activity {
 
     /** 「⇅ 並べ替える」：未購入 → 購入済み、その中は必要度（高→低）→ 追加した順。データの順を変える（PC版と同じ並び） */
     private void sortItems() {
+        pendingId = null;
+        sortItemsData();
+        scheduleSave();
+        render();
+    }
+
+    /** データの並べ替えだけ（画面は描き直さない） */
+    private void sortItemsData() {
         if (groceries == null) {
             return;
         }
@@ -447,8 +463,87 @@ public class MainActivity extends Activity {
                 return c != 0 ? c : Json.s(a, "added").compareTo(Json.s(b, "added"));
             }
         });
-        scheduleSave();
-        render();
+    }
+
+    /** 並べ替えを待っている品があれば並べ替える（データだけ）。並べ替えたら true */
+    private boolean sortPendingData() {
+        if (pendingId == null) {
+            return false;
+        }
+        pendingId = null;
+        sortItemsData();
+        return true;
+    }
+
+    /** 品 x に入力した：ほかの品が入力の途中なら先に並べ替え、x を入力の途中にする */
+    private void inputOn(Map<String, Object> x) {
+        String id = Json.s(x, "id");
+        if (pendingId != null && !pendingId.equals(id)) {
+            sortItemsData();
+            scheduleSave();
+        }
+        pendingId = id;
+    }
+
+    /** 品の行の欄にふれた：ほかの品が入力の途中なら並べ替えて、ふれた欄にもう一度カーソルを置く */
+    private void enterRow(final String id, final String key) {
+        if (pendingId == null || pendingId.equals(id)) {
+            return;
+        }
+        pendingId = null;
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                sortItemsData();
+                scheduleSave();
+                render();
+                focusField(id, key);
+            }
+        });
+    }
+
+    /** その行の入力を終えた（最後の欄で「完了」）→ 並べ替え */
+    private void finishRow() {
+        if (pendingId == null) {
+            return;
+        }
+        pendingId = null;
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                sortItemsData();
+                scheduleSave();
+                render();
+            }
+        });
+    }
+
+    private void focusField(String id, String key) {
+        if (listBox == null) {
+            return;
+        }
+        View v = listBox.findViewWithTag(id + "|" + key);
+        if (v != null) {
+            v.requestFocus();
+        }
+    }
+
+    /** 描き直しても、今カーソルのある欄にカーソルを戻す（入力の途中で欄が消えないように） */
+    private void renderKeepFocus() {
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                View f = getCurrentFocus();
+                Object tag = f != null ? f.getTag() : null;
+                render();
+                if (tag != null && listBox != null) {
+                    View v = listBox.findViewWithTag(tag);
+                    if (v != null) {
+                        v.requestFocus();
+                    }
+                }
+            }
+        });
     }
 
     private void clearDone() {
@@ -487,6 +582,7 @@ public class MainActivity extends Activity {
         rec.put("bought", false);
         rec.put("added", nowText());
         Json.arr(groceries, "items").add(rec);
+        inputOn(rec);   // 新しい品：入力の途中（ほかの品にふれると並べ替え）
         scheduleSave();
     }
 
@@ -690,11 +786,12 @@ public class MainActivity extends Activity {
                 if (bought) {
                     name.setTextColor(Color.GRAY);
                 }
-                commitOnLeave(name, new Runnable() {
+                rowField(name, x, "name", false, new Runnable() {
                     @Override
                     public void run() {
                         String t = name.getText().toString().trim();
                         if (!t.isEmpty() && !t.equals(Json.s(x, "name"))) {
+                            inputOn(x);
                             x.put("name", t);
                             scheduleSave();
                         }
@@ -705,7 +802,7 @@ public class MainActivity extends Activity {
                 final String key = k;
                 long pv = "qty".equals(k) ? qty(x) : Json.n(x, "price", 0);
                 final EditText e = edit(pv == 0 ? "" : Long.toString(pv), "qty".equals(k) ? "1" : "¥", true);
-                commitOnLeave(e, new Runnable() {
+                rowField(e, x, k, "price".equals(k), new Runnable() {   // 価格がその行の最後の欄
                     @Override
                     public void run() {
                         String t = e.getText().toString().replace(",", "").trim();
@@ -721,9 +818,10 @@ public class MainActivity extends Activity {
                         }
                         long old = "qty".equals(key) ? qty(x) : Json.n(x, "price", 0);
                         if (v != old) {
+                            inputOn(x);
                             x.put(key, Json.RawNum.of(v));
                             scheduleSave();
-                            render();
+                            renderKeepFocus();   // 小計・総計を更新（カーソルはそのまま）
                         }
                     }
                 });
@@ -735,6 +833,7 @@ public class MainActivity extends Activity {
                     @Override
                     public void on(long v) {
                         if (v != Json.n(x, "need", 2)) {
+                            inputOn(x);
                             x.put("need", Json.RawNum.of(v));
                             scheduleSave();
                             render();
@@ -971,6 +1070,38 @@ public class MainActivity extends Activity {
             }
         });
         return t;
+    }
+
+    /** 品の行の入力欄：離れたら確定、キーボードの「次へ」で同じ行の次の欄、最後の欄（価格）の「完了」で行の入力を終えて並べ替え。
+     *  ほかの品の欄にふれたら、入力の途中だった品を並べ替える */
+    private void rowField(final EditText e, final Map<String, Object> x, final String key, final boolean last,
+                          final Runnable commit) {
+        final String id = Json.s(x, "id");
+        e.setTag(id + "|" + key);
+        e.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean has) {
+                if (!has) {
+                    commit.run();
+                } else {
+                    enterRow(id, key);
+                }
+            }
+        });
+        e.setImeOptions(last ? EditorInfo.IME_ACTION_DONE : EditorInfo.IME_ACTION_NEXT);
+        e.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int actionId, android.view.KeyEvent ev) {
+                commit.run();
+                if (last) {
+                    e.clearFocus();
+                    inputOn(x);
+                    finishRow();
+                    return true;
+                }
+                return false;   // 「次へ」：同じ行の次の欄へ
+            }
+        });
     }
 
     private void commitOnLeave(EditText e, Runnable commit) {
