@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.1  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.2  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.1。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.2。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -106,8 +106,9 @@ def _date(s):
 
 
 def is_folded(n):
-    """閉じている（手で折りたたんだ／子タスクがすべて完了して隠した）"""
-    return bool(n.get("collapsed") or n.get("done_hidden"))
+    """閉じている（手で折りたたんだ）。
+    【4.2】完了しても隠さない：以前の「子タスクがすべて完了したら隠す」の印（done_hidden）は見ない（データは残す）"""
+    return bool(n.get("collapsed"))
 
 
 def _valid_date(s):
@@ -5807,9 +5808,6 @@ def run_gui(path=None):
             m.add_cascade(label="アクティブツリー", menu=am)
             m.add_separator()
             dm = tk.Menu(m, tearoff=0)
-            dm.add_checkbutton(label="子タスクがすべて完了したら隠す", variable=self.v_hide_done, command=self.save_settings)
-            dm.add_command(label="完了して隠した枝をすべて再表示", command=self.reveal_all_done)
-            dm.add_command(label="完了済みの枝を今すぐ隠す", command=self.hide_done_now)
             m.add_cascade(label="完了した枝", menu=dm)
             if view:
                 om = tk.Menu(m, tearoff=0)
@@ -10988,7 +10986,7 @@ def run_gui(path=None):
             if n.get("postpone") and not done and not n.get("reusable"):   # 延期の回数：右上に大きめの赤い札
                 self._cal_postpone_badge(x2 - (24 if sel and self.drag is None else 2), y1 + 1, n, tags)
             if n.get("gcal_id"):
-                c.create_text(x2 - 3, y2 - 2, text="G", anchor="se", font=self.font(7, bold=True), fill="#2b8a3e",
+                c.create_text(x2 - 3, y2 - 2, text="☁", anchor="se", font=self.font(8, bold=True), fill="#2b8a3e",
                               tags=tags)
             if sel and self.drag is None:   # 選択中の予定にアラームボタン
                 r = 8
@@ -13297,12 +13295,6 @@ def run_gui(path=None):
             n = self.mm.nodes[nid]
             folded = bool(n.get("collapsed"))
             tg = ("toggle", "t:" + nid)
-            if n.get("done_hidden") and not folded:   # 子タスクがすべて完了して隠れている
-                txt = "✓" + str(len(self.mm.descendants(nid)))
-                r = 9 * z + (2 * z if len(txt) > 2 else 0)
-                c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#2f9e44", outline="#ffffff", tags=tg)
-                c.create_text(cx, cy, text=txt, fill="white", font=self.font(7.5, bold=True), tags=tg)
-                return
             pk = self.mm.pruned_kids(nid) if not folded else []
             if pk:   # 未完了のない枝を隠している：緑の ✓件数（クリックで再表示）
                 bx = cx + (16 * z if side > 0 else -16 * z)
@@ -13518,19 +13510,11 @@ def run_gui(path=None):
             return len(kids), sum(1 for k in kids if k.get("status") == "done")
 
         def _auto_hide_done(self, nid):
-            """子タスクがすべて完了したら、その子たちを隠す。未完了に戻したら再表示"""
+            """【4.2】完了してもタスクを隠さない（マップ・カレンダーとも目立たない表示にするだけ。利用者の指示）。
+            以前の版で「子タスクがすべて完了したので非表示」にした印があれば外す"""
             p = self.mm.parent(nid)
-            if not p:
-                return None
-            pn = self.mm.nodes[p]
-            total, done = self._done_kids(p)
-            if self.v_hide_done.get() and total and done == total and not pn.get("done_hidden"):
-                pn["done_hidden"] = True
-                self.sel = p   # 隠れたタスクの代わりに親を選ぶ
-                return (f"「{pn.get('label', '')}」の子タスクがすべて完了したので非表示にしました"
-                        "（✓ の丸ボタンで再表示）")
-            if done < total and pn.pop("done_hidden", None):
-                return "未完了のタスクがあるので再表示しました"
+            if p and self.mm.nodes[p].pop("done_hidden", None):
+                return "完了したタスクも表示します（目立たない表示）"
             return None
 
         def reveal_done(self, nid):
@@ -13693,10 +13677,6 @@ def run_gui(path=None):
                 self.touch()
                 self.select(self.sel)
                 self.set_status("隠していた完了済みの枝を表示しました")
-                return
-            total, done = self._done_kids(nid)
-            if self.v_hide_done.get() and not n.get("collapsed") and total and done == total:
-                self.hide_done_branch(nid)   # すべて完了済みの枝は「完了で隠す」に
                 return
             self.checkpoint()
             if n.get("collapsed"):
