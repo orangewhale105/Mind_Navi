@@ -17858,6 +17858,7 @@ def run_gui(path=None):
             self.lbl_cnt.pack(fill="x")
             bf = ttk.Frame(lf)
             bf.pack(side="bottom", fill="x", pady=(6, 0))
+            ttk.Button(bf, text="⇅ 並べ替える", command=self.sort_items).pack(side="left", padx=(0, 6))
             ttk.Button(bf, text="購入済みを片付ける", command=self.clear_done).pack(side="left")
             ttk.Button(bf, text="テキストでコピー", command=self.copy_text).pack(side="left", padx=6)
             ttk.Button(bf, text="CSV出力…", command=self.export_csv).pack(side="left", padx=(0, 6))
@@ -17866,14 +17867,16 @@ def run_gui(path=None):
             ttk.Button(bf, text="削除", command=self.delete_sel).pack(side="right")
             sb.pack(side="right", fill="y")
             t.pack(fill="both", expand=True, pady=(4, 0))
-            ttk.Label(lf, text="品名・価格はクリックして入力（Enter で確定・Tab で次の欄）／必要度はクリックして一覧から（高・中・低）／☐ で購入（回数を記録）",
-                      foreground="#868e96").pack(side="bottom", anchor="w")
+            ttk.Label(lf, text="エクセルと同じ操作：セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／Enter・Tab・矢印で移動／"
+                              "入力・購入しても並びは変わりません（「⇅ 並べ替える」で並べ替え）／必要度は 1・2・3 のキーかクリック／☐ はクリックかスペースで購入",
+                      foreground="#868e96", wraplength=640, justify="left").pack(side="bottom", anchor="w")
             t.bind("<Button-1>", self.on_click)
             t.bind("<B1-Motion>", lambda ev: self._drag_motion(ev))
             t.bind("<ButtonRelease-1>", lambda ev: self._drag_release(ev))
             t.bind("<Delete>", lambda ev: self.delete_sel())
-            t.bind("<space>", lambda ev: (self.toggle(self._sel_items()), "break")[1])
-            t.bind("<Return>", lambda ev: (self.begin_cell(t.focus() or self.NEW, "name"), "break")[1])
+            t.bind("<Double-Button-1>", self._on_double)
+            self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
+                               lambda i: i == self.NEW or self.item(i) is not None)
             for seq in ("<Control-Right>", "<Command-Right>") if sys.platform == "darwin" else ("<Control-Right>",):
                 t.bind(seq, lambda ev: (self.to_staples(self._sel_items()), "break")[1])
             # 右：定番
@@ -17984,8 +17987,7 @@ def run_gui(path=None):
             sel = set(t.selection())
             t.delete(*t.get_children())
             items = self.data["items"]
-            order = sorted(items, key=lambda x: (bool(x.get("bought")), int(x.get("need") or 2), x.get("added", "")))
-            for x in order:
+            for x in items:   # 並びはデータの順のまま（並べ替えは「⇅ 並べ替える」ボタンで。スマホのアプリも同じ）
                 wk, mo, yr = self.counts(x.get("name"))
                 tags = ("done",) if x.get("bought") else ("n1",) if int(x.get("need") or 2) == 1 else ()
                 v_ = {"chk": "☑" if x.get("bought") else "☐", "name": x.get("name", ""), "qty": self.qty(x),
@@ -18002,6 +18004,10 @@ def run_gui(path=None):
             for i in sel:
                 if t.exists(i):
                     t.selection_add(i)
+            if getattr(self, "nav", None) is not None:   # 選んでいるセルの枠
+                if self.nav.cur and not t.exists(self.nav.cur[0]):
+                    self.nav.cur = None
+                self.nav.show()
             todo = [x for x in items if not x.get("bought")]
             done = [x for x in items if x.get("bought")]
             ps = lambda xs: sum(self.sub(x) for x in xs)
@@ -18046,11 +18052,14 @@ def run_gui(path=None):
             if ev.state & (0x0001 | 0x0004):
                 return None   # Shift・Ctrl＋クリックは複数選択
             if iid == self.NEW:
+                self.nav.set(iid, "name", see=False)
                 self.win.after(10, lambda: self.begin_cell(self.NEW, "name"))
                 return "break"
             x = self.item(iid)
             if not x:
                 return None
+            t.focus_set()
+            self.nav.set(iid, key, see=False)   # クリックしたセルを選ぶ（エクセルと同じ）
             if key == "chk":
                 self.toggle([iid])
                 return "break"
@@ -18058,15 +18067,52 @@ def run_gui(path=None):
                 t.selection_set(iid)
                 self.win.after(10, lambda: self.need_menu(iid))
                 return "break"
-            if key in ("name", "price", "qty") and iid in t.selection() and len(t.selection()) == 1:
-                self.win.after(10, lambda: self.begin_cell(iid, key))   # 選んである行をもう一度クリック → 入力
-                return "break"
-            t.selection_set(iid)
-            t.focus(iid)
-            if key in ("name", "price", "qty"):
-                self.win.after(10, lambda: self.begin_cell(iid, key))
+            if key in ("name", "price", "qty"):   # 文字の欄：選ぶだけ（打つと入力・ダブルクリックで今の文字のまま入力）
                 return "break"
             return None
+
+        # ---- エクセルのような操作 ----
+        def _can_edit(self, iid, key):
+            if iid == self.NEW:
+                return key == "name"
+            return key in ("name", "qty", "price") and self.item(iid) is not None
+
+        def _activate(self, iid, key, ch):
+            if iid == self.NEW:
+                if ch == "\r":
+                    self.begin_cell(self.NEW, "name")
+                    return True
+                return False
+            if not self.item(iid):
+                return False
+            if key == "chk" and ch in (" ", "\r"):
+                self.toggle([iid])
+                self.nav.set(iid, key)
+                return True
+            if key == "need" and ch in ("1", "2", "3"):   # 1＝高・2＝中・3＝低
+                self._set_need(iid, int(ch))
+                self.nav.set(iid, key)
+                return True
+            if key == "need" and ch in (" ", "\r"):
+                self.need_menu(iid)
+                return True
+            return False
+
+        def _on_double(self, ev):
+            t = self.tree
+            iid, key = t.identify_row(ev.y), self._col(ev)
+            if iid and key and self._can_edit(iid, key):
+                self.nav.set(iid, key, see=False)
+                self.begin_cell(iid, key)
+                return "break"
+            return None
+
+        def sort_items(self):
+            """「⇅ 並べ替える」：未購入 → 購入済み、その中は必要度（高→低）→ 追加した順。データの順も変える（スマホと同じ並び）"""
+            self.end_cell(True)
+            self.data["items"].sort(key=lambda x: (bool(x.get("bought")), int(x.get("need") or 2), x.get("added", "")))
+            self.save()
+            self.refresh()
 
         def need_menu(self, iid):
             """必要度：その場に 高・中・低 の一覧を出して選ぶ（ふだんは中）"""
@@ -18095,8 +18141,9 @@ def run_gui(path=None):
                 if self.tree.exists(iid):
                     self.tree.selection_set(iid)
 
-        def begin_cell(self, iid, key):
-            """セルの上に入力欄を重ねて、その場で書き込む（リストと同じ文字の大きさ）"""
+        def begin_cell(self, iid, key, init=None):
+            """セルの上に入力欄を重ねて、その場で書き込む（リストと同じ文字の大きさ）。
+            init：打った文字（今の中身を置きかえる）／None：今の文字のまま（F2・ダブルクリック）"""
             self.end_cell(True)
             t = self.tree
             if not t.exists(iid):
@@ -18114,15 +18161,15 @@ def run_gui(path=None):
                          justify="right" if key in ("price", "qty") else "left")
             e.place(x=bb[0], y=bb[1], width=bb[2], height=bb[3])   # セルと同じ大きさ・同じ文字（大きくしない）
             e.focus_set()
-            e.select_range(0, "end")
+            GridNav.start_text(e, v, init)
             self._cell = (iid, key, v, e)
-            e.bind("<Return>", lambda ev: (self.end_cell(True, "enter"), "break")[1])
-            e.bind("<KP_Enter>", lambda ev: (self.end_cell(True, "enter"), "break")[1])
-            e.bind("<Tab>", lambda ev: (self.end_cell(True, "tab"), "break")[1])
-            e.bind("<Escape>", lambda ev: (self.end_cell(False), "break")[1])
+            self.nav.set(iid, key, see=False)
+            self.nav.entry_keys(e, lambda dr, dc, wrap: self.end_cell(True, (dr, dc, wrap)))
+            e.bind("<Escape>", lambda ev: (self.end_cell(False), self.tree.focus_set(), "break")[2])
             e.bind("<FocusOut>", lambda ev: self.win.after(1, lambda: self._cell and self._cell[3] is e and self.end_cell(True)))
 
         def end_cell(self, commit=True, nxt=None):
+            """入力を確定（または取り消し）。nxt＝(行, 欄, 折り返し)：確定してそのセルへ移る。並びは変えない"""
             cell, self._cell = self._cell, None
             if not cell:
                 return
@@ -18149,6 +18196,10 @@ def run_gui(path=None):
                     return
             if iid == self.NEW:
                 if key != "name" or not val:
+                    if nxt:
+                        self.nav.set(self.NEW, "name")
+                        self.nav.step(*nxt)
+                        self.tree.focus_set()
                     return
                 st_ = next((x for x in self.data["staples"] if x.get("name") == val), None)   # 定番にあれば価格・必要度も
                 rec = {"id": uuid.uuid4().hex[:8], "name": val, "need": int((st_ or {}).get("need") or 2), "qty": 1,
@@ -18161,14 +18212,12 @@ def run_gui(path=None):
                     return
                 x[key] = val
             self.save()
-            self.refresh()
+            self.refresh()   # 並びは変えない
             if self.tree.exists(iid):
-                self.tree.selection_set(iid)
-                self.tree.focus(iid)
-            if nxt == "enter":   # Enter：品名 → 価格 → 次の新しい品
-                self.win.after(10, lambda: self.begin_cell(iid, "price") if key == "name" else self.begin_cell(self.NEW, "name"))
-            elif nxt == "tab":   # Tab：品名 → 個数 → 価格
-                self.win.after(10, lambda: self.begin_cell(iid, {"name": "qty", "qty": "price"}.get(key, "name")))
+                self.nav.set(iid, key)
+            if nxt:   # Enter・Tab・矢印：確定して隣のセルへ（エクセルと同じ）
+                self.nav.step(*nxt)
+                self.tree.focus_set()
 
         def toggle(self, ids):
             """☐ で購入済み（購入回数を記録）／もう一度で取り消し"""
