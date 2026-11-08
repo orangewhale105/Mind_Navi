@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.0  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.2  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.0。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.2。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -106,8 +106,9 @@ def _date(s):
 
 
 def is_folded(n):
-    """閉じている（手で折りたたんだ／子タスクがすべて完了して隠した）"""
-    return bool(n.get("collapsed") or n.get("done_hidden"))
+    """閉じている（手で折りたたんだ）。
+    【4.2】完了しても隠さない：以前の「子タスクがすべて完了したら隠す」の印（done_hidden）は見ない（データは残す）"""
+    return bool(n.get("collapsed"))
 
 
 def _valid_date(s):
@@ -5807,9 +5808,6 @@ def run_gui(path=None):
             m.add_cascade(label="アクティブツリー", menu=am)
             m.add_separator()
             dm = tk.Menu(m, tearoff=0)
-            dm.add_checkbutton(label="子タスクがすべて完了したら隠す", variable=self.v_hide_done, command=self.save_settings)
-            dm.add_command(label="完了して隠した枝をすべて再表示", command=self.reveal_all_done)
-            dm.add_command(label="完了済みの枝を今すぐ隠す", command=self.hide_done_now)
             m.add_cascade(label="完了した枝", menu=dm)
             if view:
                 om = tk.Menu(m, tearoff=0)
@@ -6077,7 +6075,9 @@ def run_gui(path=None):
             t.bind("<BackSpace>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
             # エクセルと同じ操作：セルを選んで矢印・Tab・Enter で移動、文字を打つと入力（タスク名）、数字キーで 重・必・緊
             self.list_nav = GridNav(t, list(LIST_COLS), self._list_can_edit, self._list_begin, self._list_activate,
-                                    lambda i: i in self.mm.nodes or i == "__newtask__")
+                                    lambda i: i in self.mm.nodes or i == "__newtask__",
+                                    fields=["label", "imp", "need", "urg"], on_resort=self._list_auto_resort,
+                                    new_row="__newtask__")   # 行の入力を終えるか、ほかを選ぶと並べ替え
 
             def list_press(ev):   # 選んである行をもう一度クリック → マップ⇔カレンダー
                 iid = t.identify_row(ev.y)
@@ -6610,22 +6610,37 @@ def run_gui(path=None):
                     e.destroy()
                 except tk.TclError:
                     pass
+                nav = self.list_nav
                 if commit and txt:
                     self.add_task_from_list(txt)
-                nav = self.list_nav
+                    nid = self.sel
+                    if nid in self.mm.nodes and t.exists(nid):   # 追加したタスクの行へ：続けて 重・必・緊 を入力
+                        nav.touch(nid, new=True)
+                        nav.set(nid, "label")
+                        nav.go(nxt or ("field", 1))
+                        t.focus_set()
+                        return
                 if t.exists("__newtask__"):
-                    nav.set("__newtask__", "label")   # 新しい行にカーソル：続けて打てば次のタスク
+                    nav.set("__newtask__", "label")
                 t.focus_set()
-            self.list_nav.entry_keys(e, lambda dr, dc, wrap: done(True, (dr, dc, wrap)))
+            self.list_nav.entry_keys(e, lambda mv: done(True, mv))
             e.bind("<Escape>", lambda ev: (done(False), "break")[1])
             e.bind("<FocusOut>", lambda ev: done(bool(v.get().strip())) if e.winfo_exists() else None)
 
         # ---- タスクリスト：エクセルと同じ操作 ----
         def resort_list(self):
             """「⇅ 並べ替える」：今の並べ替えの設定で並べ直す（完了したタスクも完了済みへ）"""
+            nav = getattr(self, "list_nav", None)
+            if nav is not None:
+                nav.pending = None
             self._list_resnap = True
             self.refresh_focus_list()
             self.set_status("タスクリストを並べ替えました")
+
+        def _list_auto_resort(self):
+            """行の入力を終えた・ほかを選んだ・画面を切り替えた → 並べ替え（GridNav から）"""
+            self._list_resnap = True
+            self.refresh_focus_list()
 
         def _list_can_edit(self, iid, key):
             return key == "label" and (iid == "__newtask__" or iid in self.mm.nodes)
@@ -6660,18 +6675,21 @@ def run_gui(path=None):
                     e.destroy()
                 except tk.TclError:
                     pass
-                if commit and txt and iid in self.mm.nodes and txt != self.mm.nodes[iid].get("label"):
+                changed = commit and txt and iid in self.mm.nodes and txt != self.mm.nodes[iid].get("label")
+                if changed:
                     self.checkpoint()
                     self.mm.nodes[iid]["label"] = txt
                     self.mm.nodes[iid]["updated"] = now()
-                    self.touch()   # 並びは変えない
+                    self.touch()   # 入力の途中は並びを変えない
                     self.redraw()
                 if t.exists(iid):
                     self.list_nav.set(iid, "label")
+                    if changed:
+                        self.list_nav.touch(iid)
                     if nxt:
-                        self.list_nav.step(*nxt)
+                        self.list_nav.go(nxt)
                 t.focus_set()
-            self.list_nav.entry_keys(e, lambda dr, dc, wrap: done(True, (dr, dc, wrap)))
+            self.list_nav.entry_keys(e, lambda mv: done(True, mv))
             e.bind("<Escape>", lambda ev: (done(False), "break")[1])
             e.bind("<FocusOut>", lambda ev: done(True) if e.winfo_exists() else None)
 
@@ -6685,20 +6703,22 @@ def run_gui(path=None):
             n = self.mm.nodes.get(iid)
             if not n:
                 return False
-            if key == "chk" and ch in (" ", "\r") and not n.get("reusable"):
+            if key == "chk" and ch == " " and not n.get("reusable"):
                 self.select(iid)
                 self.toggle_done()
                 self.list_nav.set(iid, key)
+                self.list_nav.touch(iid)
                 return True
             if key in ("imp", "need", "urg") and ch and ch in "123456":
                 self.checkpoint()
                 n[key] = int(ch)
                 n["updated"] = now()
-                self.touch()   # 並びは変えない
+                self.touch()   # 入力の途中は並びを変えない
                 self.redraw()
                 self.list_nav.set(iid, key)
+                self.list_nav.touch(iid)
                 return True
-            if ch != "\r" and not (key == "cat" and ch == " "):
+            if ch != " ":   # 分類・日時・カテゴリ・📝 はスペースで開く（Enter は次の欄へ）
                 return False
             self.select(iid)
             if key in ("quad", "imp", "need", "urg"):
@@ -6982,9 +7002,10 @@ def run_gui(path=None):
                 self.refresh_focus_list()
                 return "break"
             self._ldrag = {"iid": iid, "x": ev.x_root, "y": ev.y_root, "on": False} if iid else None
-            if iid and col == LCOL["chk"]:   # □ 列 → 完了の切り替え
+            if iid and col == LCOL["chk"]:   # □ 列 → 完了の切り替え（ほかの行を選ぶと並べ替え）
                 self.select(iid)
                 self.toggle_done()
+                self.list_nav.touch(iid)
                 return "break"
             if iid and col == LCOL["cat"]:   # カテゴリ → その場で選ぶメニュー
                 self.select(iid)
@@ -8195,6 +8216,9 @@ def run_gui(path=None):
                                                                  round(self.oy, 1)]
 
         def set_style(self, style):
+            nav_ = getattr(self, "list_nav", None)
+            if nav_ is not None and nav_.pending:   # 画面を切り替えた → タスクリストを並べ替え
+                self.root.after_idle(nav_.resort)
             self.v_style.set(style)
             if style == self.style:
                 return
@@ -10962,7 +10986,7 @@ def run_gui(path=None):
             if n.get("postpone") and not done and not n.get("reusable"):   # 延期の回数：右上に大きめの赤い札
                 self._cal_postpone_badge(x2 - (24 if sel and self.drag is None else 2), y1 + 1, n, tags)
             if n.get("gcal_id"):
-                c.create_text(x2 - 3, y2 - 2, text="G", anchor="se", font=self.font(7, bold=True), fill="#2b8a3e",
+                c.create_text(x2 - 3, y2 - 2, text="☁", anchor="se", font=self.font(8, bold=True), fill="#2b8a3e",
                               tags=tags)
             if sel and self.drag is None:   # 選択中の予定にアラームボタン
                 r = 8
@@ -11002,14 +11026,7 @@ def run_gui(path=None):
                 for xx in (x1 + wdt / 2, x2 - wdt / 2):   # 縁取りの縦線
                     c.create_line(xx, y1, xx, y2, fill=col, width=wdt, tags=tags)
             xm = x2 - 8
-            if q and y2 - y1 >= 16 and x2 - x1 >= 70:   # 入る大きさなら頭文字の札（コ・オ・ス・デ）
-                fq = self.font(7, bold=True)
-                ch = QUAD_INITIAL[q]
-                w_ = fq.measure(ch) + 6
-                c.create_rectangle(x2 - 8 - w_, y2 - 14, x2 - 8, y2 - 1, fill=QUAD_COLOR[q], outline="", tags=tags)
-                c.create_text(x2 - 8 - w_ / 2, y2 - 7.5, text=ch, font=fq, fill="#ffffff", tags=tags)
-                if y2 - y1 < 30:
-                    xm = x2 - 10 - w_
+            # （4象限の頭文字 C・O・S・D の札は廃止：分類は塗りの色で分かる。2026-11-08 利用者の指示）
             if has_memo(n) and x2 - x1 >= 40 and n.get("id"):   # 📝 メモあり（ダブルクリックでメモを開く）
                 nid_ = n.get("_base") or n["id"]
                 yc_ = y1 + min(8, (y2 - y1) / 2)
@@ -13278,12 +13295,6 @@ def run_gui(path=None):
             n = self.mm.nodes[nid]
             folded = bool(n.get("collapsed"))
             tg = ("toggle", "t:" + nid)
-            if n.get("done_hidden") and not folded:   # 子タスクがすべて完了して隠れている
-                txt = "✓" + str(len(self.mm.descendants(nid)))
-                r = 9 * z + (2 * z if len(txt) > 2 else 0)
-                c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#2f9e44", outline="#ffffff", tags=tg)
-                c.create_text(cx, cy, text=txt, fill="white", font=self.font(7.5, bold=True), tags=tg)
-                return
             pk = self.mm.pruned_kids(nid) if not folded else []
             if pk:   # 未完了のない枝を隠している：緑の ✓件数（クリックで再表示）
                 bx = cx + (16 * z if side > 0 else -16 * z)
@@ -13337,6 +13348,9 @@ def run_gui(path=None):
 
         # ================= 選択・パネル =================
         def select(self, nid):
+            nav_ = getattr(self, "list_nav", None)
+            if nav_ is not None and nav_.pending and nid != nav_.pending:   # ほかの物を選んだ → タスクリストを並べ替え
+                self.root.after_idle(nav_.resort)
             old = self.sel
             self.sel = nid
             n = self.mm.nodes.get(nid) if nid else None
@@ -13496,19 +13510,11 @@ def run_gui(path=None):
             return len(kids), sum(1 for k in kids if k.get("status") == "done")
 
         def _auto_hide_done(self, nid):
-            """子タスクがすべて完了したら、その子たちを隠す。未完了に戻したら再表示"""
+            """【4.2】完了してもタスクを隠さない（マップ・カレンダーとも目立たない表示にするだけ。利用者の指示）。
+            以前の版で「子タスクがすべて完了したので非表示」にした印があれば外す"""
             p = self.mm.parent(nid)
-            if not p:
-                return None
-            pn = self.mm.nodes[p]
-            total, done = self._done_kids(p)
-            if self.v_hide_done.get() and total and done == total and not pn.get("done_hidden"):
-                pn["done_hidden"] = True
-                self.sel = p   # 隠れたタスクの代わりに親を選ぶ
-                return (f"「{pn.get('label', '')}」の子タスクがすべて完了したので非表示にしました"
-                        "（✓ の丸ボタンで再表示）")
-            if done < total and pn.pop("done_hidden", None):
-                return "未完了のタスクがあるので再表示しました"
+            if p and self.mm.nodes[p].pop("done_hidden", None):
+                return "完了したタスクも表示します（目立たない表示）"
             return None
 
         def reveal_done(self, nid):
@@ -13671,10 +13677,6 @@ def run_gui(path=None):
                 self.touch()
                 self.select(self.sel)
                 self.set_status("隠していた完了済みの枝を表示しました")
-                return
-            total, done = self._done_kids(nid)
-            if self.v_hide_done.get() and not n.get("collapsed") and total and done == total:
-                self.hide_done_branch(nid)   # すべて完了済みの枝は「完了で隠す」に
                 return
             self.checkpoint()
             if n.get("collapsed"):
@@ -18174,28 +18176,40 @@ def run_gui(path=None):
             self.win.destroy()
 
     class GridNav:
-        """一覧（Treeview）をエクセルのように操作する（2026-11-08）。
-        選んだセルに太い枠。矢印・Tab・Shift+Tab・Enter で移動。文字を打つとそのセルに入力（F2・ダブルクリックは今の文字のまま入力）。
-        入力を確定しても並べ替えない（並べ替えは各画面の「並べ替え」ボタンで）。
-        cols：左からの欄のキー、can_edit(iid, key)：文字を入力できるか、begin(iid, key, init)：入力欄を出す、
-        activate(iid, key, ch)：入力欄以外の操作（☐・★・一覧から選ぶ など。した なら True）、is_row(iid)：カーソルを置ける行か"""
-        def __init__(self, tree, cols, can_edit, begin, activate=None, is_row=None, color="#1c7ed6"):
+        """一覧（Treeview）をエクセルのように操作する（2026-11-08。並べ替えの決まりは 4.1 で変更）。
+        ・選んだセルに太い枠。文字を打つとそのセルに入力（F2・ダブルクリックは今の文字のまま）。
+        ・Enter・Tab：次のデータの欄へ（Shift+Tab で前へ）。↑↓：上下の行、←→：隣の欄。
+        ・入力している途中は並べ替えない。その行のデータの欄をすべて入力し終えた（最後の欄で Enter・Tab）、
+          ほかの行やほかの物を選んだ、画面を切り替えた ときに並べ替える（on_resort）。
+        cols：左からの欄のキー、fields：Enter・Tab で順に回るデータの欄、can_edit(iid, key)：文字を入力できるか、
+        begin(iid, key, init)：入力欄を出す、activate(iid, key, ch)：入力欄以外の操作（した なら True）、
+        is_row(iid)：カーソルを置ける行か、on_resort()：並べ替える、new_row：新しい行の iid"""
+        def __init__(self, tree, cols, can_edit, begin, activate=None, is_row=None, color="#1c7ed6",
+                     fields=None, on_resort=None, new_row=None):
             self.t, self.cols = tree, list(cols)
+            self.fields = [f for f in (fields or cols) if f in self.cols]
             self.can_edit, self.begin = can_edit, begin
             self.activate = activate or (lambda iid, key, ch: False)
             self.is_row = is_row or (lambda iid: True)
+            self.on_resort, self.new_row = on_resort, new_row
             self.cur = None
+            self.pending = None        # 入力の途中の行（並べ替えを待っている行）
+            self.pending_new = False   # その行は新しく追加した品か（入力し終えたら新しい行へ）
+            self._busy = False
             self.box = [tk.Frame(tree, bg=color, height=2, width=2) for _ in range(4)]
-            for seq, d in (("<Up>", (-1, 0)), ("<Down>", (1, 0)), ("<Left>", (0, -1)), ("<Right>", (0, 1))):
-                tree.bind(seq, lambda ev, d=d: self._key_move(*d))
-            tree.bind("<Tab>", lambda ev: self._key_move(0, 1, wrap=True))
+            tree.bind("<Up>", lambda ev: self._key(lambda: self.step(-1, 0)))
+            tree.bind("<Down>", lambda ev: self._key(lambda: self.step(1, 0)))
+            tree.bind("<Left>", lambda ev: self._key(lambda: self.step(0, -1)))
+            tree.bind("<Right>", lambda ev: self._key(lambda: self.step(0, 1)))
+            tree.bind("<Tab>", lambda ev: self._key(lambda: self.next_field(1)))
             for seq in ("<Shift-Tab>", "<ISO_Left_Tab>"):
-                tree.bind(seq, lambda ev: self._key_move(0, -1, wrap=True))
+                tree.bind(seq, lambda ev: self._key(lambda: self.next_field(-1)))
             for seq in ("<Return>", "<KP_Enter>"):
                 tree.bind(seq, self._on_return)
             tree.bind("<F2>", lambda ev: self.edit(keep=True))
             tree.bind("<Key>", self._on_key, add="+")
             tree.bind("<Configure>", lambda ev: tree.after_idle(self.show), add="+")
+            tree.bind("<FocusOut>", lambda ev: tree.after(150, self._left_list), add="+")   # 画面を切り替えた → 並べ替え
             for opt in ("yscrollcommand", "xscrollcommand"):   # スクロールしたら枠も動かす
                 orig = tree.tk.splitlist(tree.cget(opt)) if tree.cget(opt) else ()
                 if orig:
@@ -18204,6 +18218,48 @@ def run_gui(path=None):
                         tree.after_idle(self.show)
                     tree.configure(**{opt: tree.register(wrapped)})
 
+        # ---- 並べ替えを待つ行 ----
+        def touch(self, iid, new=False):
+            """その行に入力した（並べ替えは、その行の入力を終えるか、ほかを選ぶまで待つ）"""
+            if not iid or iid == self.new_row:
+                return
+            if self.pending and self.pending != iid:   # 別の行に入力した → 前の行は終わり
+                self.resort()
+            if self.pending != iid:
+                self.pending_new = bool(new)
+            elif new:
+                self.pending_new = True
+            self.pending = iid
+
+        def resort(self):
+            """待っていた並べ替えをする（カーソルは同じ品のまま）"""
+            if not self.pending or self._busy:
+                return
+            self.pending, self.pending_new = None, False
+            if not self.on_resort:
+                return
+            cur = self.cur
+            self._busy = True
+            try:
+                self.on_resort()
+            finally:
+                self._busy = False
+            if cur and self.t.exists(cur[0]):
+                self.set(cur[0], cur[1])
+
+        def _left_list(self):
+            """一覧の外（ほかの画面・ほかの欄）へ移った → 並べ替え（一覧の中の入力欄・メニューは除く）"""
+            if not self.pending:
+                return
+            try:
+                fw = self.t.focus_get()
+            except (KeyError, tk.TclError):
+                return
+            if fw is None or str(fw).startswith(str(self.t)) or fw.winfo_class() == "Menu":
+                return
+            self.resort()
+
+        # ---- カーソル ----
         def rows(self):
             """カーソルを置ける行（見えているもの。開いたまとまりの中も）の並び"""
             out = []
@@ -18229,6 +18285,8 @@ def run_gui(path=None):
             if iid not in self.t.selection():
                 self.t.selection_set(iid)
             self.t.after_idle(self.show)
+            if self.pending and iid != self.pending and not self._busy:   # ほかの行を選んだ → 前の行を並べ替え
+                self.resort()
 
         def show(self):
             for f in self.box:
@@ -18245,32 +18303,71 @@ def run_gui(path=None):
             for f, (fx, fy, fw, fh) in zip(self.box, ((x, y, w, 2), (x, y + h - 2, w, 2), (x, y, 2, h), (x + w - 2, y, 2, h))):
                 f.place(x=fx, y=fy, width=fw, height=fh)
 
-        def step(self, dr, dc, wrap=False):
-            """今のセルから dr 行・dc 欄 動かす（Tab は行の端で次の行へ）"""
+        def step(self, dr, dc):
+            """↑↓：上下の行、←→：隣の欄"""
             rows = self.rows()
             if not rows:
                 return
             if not self.cur or self.cur[0] not in rows:
-                self.set(rows[0], self.cur[1] if self.cur else self.cols[0])
+                self.set(rows[0], self.cur[1] if self.cur else self.fields[0] if self.fields else self.cols[0])
                 return
             r, c = rows.index(self.cur[0]), self.cols.index(self.cur[1])
-            c += dc
-            if wrap and c >= len(self.cols):
-                c, r = 0, r + 1
-            elif wrap and c < 0:
-                c, r = len(self.cols) - 1, r - 1
             r = max(0, min(len(rows) - 1, r + dr))
-            c = max(0, min(len(self.cols) - 1, c))
+            c = max(0, min(len(self.cols) - 1, c + dc))
             self.set(rows[r], self.cols[c])
 
-        def _key_move(self, dr, dc, wrap=False):
-            self.step(dr, dc, wrap)
+        def next_field(self, d):
+            """Enter・Tab：同じ行の次のデータの欄へ。最後の欄の次へ進んだら、その行の入力は終わり → 並べ替えて
+            新しく追加した品なら「＋ 新しい…」の行へ、ほかは次の行の最初の欄へ"""
+            if not self.cur or not self.fields:
+                self.step(0, d)
+                return
+            iid, key = self.cur
+            if iid == self.new_row:   # 新しい行：品名などを打てば入力が始まる
+                return
+            if key in self.fields:
+                k = self.fields.index(key) + d
+            else:   # データの欄でない所から：右（左）にあるいちばん近いデータの欄へ
+                ci = self.cols.index(key)
+                right = [f for f in self.fields if (self.cols.index(f) > ci if d > 0 else self.cols.index(f) < ci)]
+                k = self.fields.index(right[0] if d > 0 else right[-1]) if right else (len(self.fields) if d > 0 else -1)
+            if 0 <= k < len(self.fields):
+                self.set(iid, self.fields[k])
+                return
+            if d < 0:
+                return
+            was_new = self.pending_new and self.pending == iid
+            if self.pending:
+                self.resort()   # その行の入力を終えた → 並べ替え
+            if was_new and self.new_row and self.t.exists(self.new_row):
+                self.set(self.new_row, self.fields[0])   # 続けて次の品を入力できるように
+                return
+            rows = self.rows()
+            if iid in rows and rows.index(iid) + 1 < len(rows):
+                self.set(rows[rows.index(iid) + 1], self.fields[0])
+            else:
+                self.set(iid, self.fields[0])
+
+        def go(self, mv):
+            """入力欄を確定した後の移動：("field", ±1)・("row", ±1)・("col", ±1)"""
+            if not mv:
+                return
+            kind, d = mv
+            if kind == "field":
+                self.next_field(d)
+            elif kind == "row":
+                self.step(d, 0)
+            else:
+                self.step(0, d)
+
+        def _key(self, fn):
+            fn()
             return "break"
 
         def _on_return(self, ev):
             if self.cur and self.activate(self.cur[0], self.cur[1], "\r"):   # 新しい行などは Enter で入力
                 return "break"
-            self.step(1, 0)
+            self.next_field(1)
             return "break"
 
         def edit(self, keep=True, init=None):
@@ -18293,8 +18390,8 @@ def run_gui(path=None):
             return None
 
         def entry_keys(self, e, commit):
-            """セルの入力欄：Enter＝確定して下へ、Tab＝右へ、Shift+Tab＝左へ、↑↓＝上下へ、
-            ←→＝文字の端なら隣のセルへ。commit(dr, dc, wrap) は確定して移動する処理"""
+            """セルの入力欄：Enter・Tab＝確定して次のデータの欄へ、Shift+Tab＝前の欄へ、↑↓＝上下の行へ、
+            ←→＝文字の端なら隣の欄へ。commit(移動) は確定して移る処理（移動は go() の形）"""
             def lr(ev, d):
                 try:
                     pos, n = e.index("insert"), len(e.get())
@@ -18303,15 +18400,14 @@ def run_gui(path=None):
                     return None
                 if has_sel or (d < 0 and pos > 0) or (d > 0 and pos < n):
                     return None   # 文字の中を動く
-                commit(0, d, False)
+                commit(("col", d))
                 return "break"
-            e.bind("<Return>", lambda ev: (commit(1, 0, False), "break")[1])
-            e.bind("<KP_Enter>", lambda ev: (commit(1, 0, False), "break")[1])
-            e.bind("<Tab>", lambda ev: (commit(0, 1, True), "break")[1])
+            for seq in ("<Return>", "<KP_Enter>", "<Tab>"):
+                e.bind(seq, lambda ev: (commit(("field", 1)), "break")[1])
             for seq in ("<Shift-Tab>", "<ISO_Left_Tab>"):
-                e.bind(seq, lambda ev: (commit(0, -1, True), "break")[1])
-            e.bind("<Up>", lambda ev: (commit(-1, 0, False), "break")[1])
-            e.bind("<Down>", lambda ev: (commit(1, 0, False), "break")[1])
+                e.bind(seq, lambda ev: (commit(("field", -1)), "break")[1])
+            e.bind("<Up>", lambda ev: (commit(("row", -1)), "break")[1])
+            e.bind("<Down>", lambda ev: (commit(("row", 1)), "break")[1])
             e.bind("<Left>", lambda ev: lr(ev, -1))
             e.bind("<Right>", lambda ev: lr(ev, 1))
 
@@ -18385,8 +18481,8 @@ def run_gui(path=None):
             ttk.Button(bf, text="削除", command=self.delete_sel).pack(side="right")
             sb.pack(side="right", fill="y")
             t.pack(fill="both", expand=True, pady=(4, 0))
-            ttk.Label(lf, text="エクセルと同じ操作：セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／Enter・Tab・矢印で移動／"
-                              "入力・購入しても並びは変わりません（「⇅ 並べ替える」で並べ替え）／必要度は 1・2・3 のキーかクリック／☐ はクリックかスペースで購入",
+            ttk.Label(lf, text="セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／Enter・Tab で次の欄へ、↑↓←→ で移動／"
+                              "行の入力の途中は並べ替えず、最後の欄まで入力するか、ほかの行を選ぶと並べ替え／必要度は 1・2・3 のキー／☐ はクリックかスペースで購入",
                       foreground="#868e96", wraplength=640, justify="left").pack(side="bottom", anchor="w")
             t.bind("<Button-1>", self.on_click)
             t.bind("<B1-Motion>", lambda ev: self._drag_motion(ev))
@@ -18394,7 +18490,8 @@ def run_gui(path=None):
             t.bind("<Delete>", lambda ev: self.delete_sel())
             t.bind("<Double-Button-1>", self._on_double)
             self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
-                               lambda i: i == self.NEW or self.item(i) is not None)
+                               lambda i: i == self.NEW or self.item(i) is not None,
+                               fields=["name", "qty", "price", "need"], on_resort=self.sort_items, new_row=self.NEW)
             for seq in ("<Control-Right>", "<Command-Right>") if sys.platform == "darwin" else ("<Control-Right>",):
                 t.bind(seq, lambda ev: (self.to_staples(self._sel_items()), "break")[1])
             # 右：定番
@@ -18580,6 +18677,7 @@ def run_gui(path=None):
             self.nav.set(iid, key, see=False)   # クリックしたセルを選ぶ（エクセルと同じ）
             if key == "chk":
                 self.toggle([iid])
+                self.nav.touch(iid)   # 購入のチェック：ほかの行を選ぶと並べ替え
                 return "break"
             if key == "need":   # クリックで 高・中・低 の一覧を出して選ぶ
                 t.selection_set(iid)
@@ -18603,15 +18701,16 @@ def run_gui(path=None):
                 return False
             if not self.item(iid):
                 return False
-            if key == "chk" and ch in (" ", "\r"):
+            if key == "chk" and ch == " ":
                 self.toggle([iid])
                 self.nav.set(iid, key)
+                self.nav.touch(iid)
                 return True
             if key == "need" and ch in ("1", "2", "3"):   # 1＝高・2＝中・3＝低
                 self._set_need(iid, int(ch))
                 self.nav.set(iid, key)
                 return True
-            if key == "need" and ch in (" ", "\r"):
+            if key == "need" and ch == " ":
                 self.need_menu(iid)
                 return True
             return False
@@ -18656,6 +18755,7 @@ def run_gui(path=None):
                 x["need"] = int(k)
                 self.save()
                 self.refresh()
+                self.nav.touch(iid)
                 if self.tree.exists(iid):
                     self.tree.selection_set(iid)
 
@@ -18682,7 +18782,7 @@ def run_gui(path=None):
             GridNav.start_text(e, v, init)
             self._cell = (iid, key, v, e)
             self.nav.set(iid, key, see=False)
-            self.nav.entry_keys(e, lambda dr, dc, wrap: self.end_cell(True, (dr, dc, wrap)))
+            self.nav.entry_keys(e, lambda mv: self.end_cell(True, mv))
             e.bind("<Escape>", lambda ev: (self.end_cell(False), self.tree.focus_set(), "break")[2])
             e.bind("<FocusOut>", lambda ev: self.win.after(1, lambda: self._cell and self._cell[3] is e and self.end_cell(True)))
 
@@ -18712,11 +18812,13 @@ def run_gui(path=None):
                 except ValueError:
                     messagebox.showwarning("買い物リスト", "個数は数字で入力してください", parent=self.win)
                     return
+            created = iid == self.NEW
             if iid == self.NEW:
                 if key != "name" or not val:
                     if nxt:
                         self.nav.set(self.NEW, "name")
-                        self.nav.step(*nxt)
+                        if nxt[0] == "row":
+                            self.nav.go(nxt)
                         self.tree.focus_set()
                     return
                 st_ = next((x for x in self.data["staples"] if x.get("name") == val), None)   # 定番にあれば価格・必要度も
@@ -18730,11 +18832,12 @@ def run_gui(path=None):
                     return
                 x[key] = val
             self.save()
-            self.refresh()   # 並びは変えない
+            self.refresh()   # 入力の途中は並びを変えない
             if self.tree.exists(iid):
                 self.nav.set(iid, key)
-            if nxt:   # Enter・Tab・矢印：確定して隣のセルへ（エクセルと同じ）
-                self.nav.step(*nxt)
+                self.nav.touch(iid, new=created)
+            if nxt:   # Enter・Tab：次のデータの欄へ／矢印：上下・隣へ
+                self.nav.go(nxt)
                 self.tree.focus_set()
 
         def toggle(self, ids):
@@ -19087,6 +19190,10 @@ def run_gui(path=None):
                     x["bought"] = ""   # 買う前の状態に戻した
             self.save()
             self.refresh()
+            if len(ids) == 1 and self.tree.exists(ids[0]):
+                self.nav.touch(ids[0])   # 1品だけ：入力中の行として、終えるかほかを選んだら並べ替え
+            else:
+                self.apply_sort()
             self.lbl_msg.configure(text=f"{len(xs)} 品を {self.SNAME[st]} にしました（{datetime.datetime.now():%H:%M}）")
             return len(xs)
 
@@ -19153,8 +19260,8 @@ def run_gui(path=None):
             ttk.Button(sb_, text="⇅ 並べ替える", command=lambda: self.set_sorts(self.sorts)).pack(side="left", padx=(10, 0))
             ttk.Button(sb_, text="既定に戻す", command=lambda: self.set_sorts([("quad", False), ("life", True),
                                                                            ("value", True)])).pack(side="left", padx=(6, 0))
-            ttk.Label(f, text="エクセルと同じ操作：セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／ Enter・Tab・矢印でセルを移動／"
-                              "入力しても並びは変わりません（「並べ替える」ボタンで並べ替え）／ ★は1〜6のキーかクリック／ 状態は W・B・H・C・S のキー／"
+            ttk.Label(f, text="セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／ Enter・Tab で次の欄へ、↑↓←→ で移動／"
+                              "行の入力の途中は並べ替えず、最後の欄まで入力するか、ほかの行を選ぶと並べ替え／ ★は1〜6 のキー、状態は W・B・H・C・S のキー、カテゴリはスペース／"
                               " ✕・Delete で削除（元に戻す：Ctrl+Z）／ いちばん下の行で新しい品を追加",
                       foreground="#868e96", wraplength=700, justify="left").pack(side="bottom", anchor="w", pady=(4, 0))
             tf = ttk.Frame(f)
@@ -19167,9 +19274,8 @@ def run_gui(path=None):
             t.tag_configure("new", foreground="#1c7ed6")
             t.tag_configure("delcol", foreground="#adb5bd")
             t.tag_configure("hl", background="#fff3bf")
-            t.tag_configure("st_hold", foreground="#adb5bd")      # Hold：うすい灰色
-            t.tag_configure("st_clutter", foreground="#c92a2a")   # Clutter：赤
-            t.tag_configure("st_sold", foreground="#7048e8")      # Sold：紫
+            for k_, _n, _d, col_ in self.STATUSES:   # 状態は行の地の色で分かるように（印は使わない）
+                t.tag_configure("st_" + k_, background=mix(col_, 0.86), foreground="#212529")
             t.tag_configure("subtot", background="#f1f3f5", foreground="#495057", font=(self.app.fam_base, 9, "bold"))
             t.tag_configure("grand", background="#e7f5ff", foreground="#1864ab", font=(self.app.fam_base, 10, "bold"))
             t.tag_configure("sechead", background="#343a40", foreground="#ffffff", font=(self.app.fam_base, 10, "bold"))
@@ -19221,7 +19327,9 @@ def run_gui(path=None):
             self._cell = None
             self._undo_del = []   # 削除を元に戻す用：[(位置, 品)]
             self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
-                               lambda i: i == self.NEW or self.item(i) is not None)
+                               lambda i: i == self.NEW or self.item(i) is not None,
+                               fields=["name", "cat", "status", "life", "value", "price", "sell"],
+                               on_resort=self.apply_sort, new_row=self.NEW)   # 行の入力を終えたら並べ替え
 
         # ---- リスト上で直接入力 ----
         def item(self, iid):
@@ -19424,6 +19532,7 @@ def run_gui(path=None):
                 self.save()
                 self.refresh()
                 self.nav.set(iid, key)
+                self.nav.touch(iid)
                 return True
             if key == "status":
                 hot = {"w": "wants", "b": "buy", "h": "hold", "c": "clutter", "s": "sold"}.get(ch.lower())
@@ -19431,24 +19540,25 @@ def run_gui(path=None):
                     self.set_status([iid], hot)
                     self.nav.set(iid, key)
                     return True
-                if ch in ("\r", " "):
+                if ch == " ":   # スペース：一覧から選ぶ（Enter は次の欄へ）
                     bb = self.tree.bbox(iid, "#" + str([c[0] for c in self.COLS].index("status") + 1))
                     if bb:
                         self.status_menu([iid], self.tree.winfo_rootx() + bb[0], self.tree.winfo_rooty() + bb[1] + bb[3])
                     return True
-            if key == "cat" and ch in ("\r", " "):
+            if key == "cat" and ch == " ":
                 self.cat_menu(iid)
                 return True
-            if key == "daily" and ch in ("\r", " "):
+            if key == "daily" and ch == " ":
                 it["daily"] = not it.get("daily")
                 self.save()
                 self.refresh()
                 self.nav.set(iid, key)
+                self.nav.touch(iid)
                 return True
-            if key == "sdate" and ch == "\r":
+            if key == "sdate" and ch == " ":
                 self.fix_date()
                 return True
-            if key == "del" and ch in ("\r", " "):
+            if key == "del" and ch == " ":
                 self.delete_items([iid])
                 return True
             return False
@@ -19520,6 +19630,7 @@ def run_gui(path=None):
         def show_status(self, key):
             """札を押す：その状態だけを表示（もう一度押すか「すべて」ですべて）"""
             self.end_cell(commit=True, finish=False)
+            self.nav.resort()   # 表示を切り替える → 入力中の行も並べ替え
             self.v_show.set("すべて" if self.v_show.get() == key else key)
             self.refresh()
 
@@ -19616,6 +19727,7 @@ def run_gui(path=None):
                     self.item(iid)["cat"] = v
                     self.save()
                     self.refresh()
+                    self.nav.touch(iid)
                     if t.exists(iid):
                         t.selection_set(iid)
                         t.focus(iid)
@@ -19663,7 +19775,7 @@ def run_gui(path=None):
             GridNav.start_text(e, v, init)
             self._cell = (iid, key, v, e)
             self.nav.set(iid, key, see=False)
-            self.nav.entry_keys(e, lambda dr, dc, wrap: self.end_cell(commit=True, nxt=(dr, dc, wrap)))
+            self.nav.entry_keys(e, lambda mv: self.end_cell(commit=True, nxt=mv))
             e.bind("<Escape>", lambda ev: (self.end_cell(commit=False), self.tree.focus_set(), "break")[2])
             e.bind("<FocusOut>", lambda ev: self.win.after(1, lambda: self._focus_out(e)))
 
@@ -19680,7 +19792,7 @@ def run_gui(path=None):
         def end_cell(self, commit=True, nxt=None, finish=None):
             """入力欄を閉じる。finish：その品の入力を終えたか（Tab で次の欄へ進むときは終えていない）"""
             if finish is None:
-                finish = nxt is None or (isinstance(nxt, tuple) and nxt[0] != 0)
+                finish = nxt is None or nxt[0] == "row"
             cell, self._cell = self._cell, None
             if not cell:
                 return
@@ -19696,12 +19808,14 @@ def run_gui(path=None):
                 elif finish:
                     self.unfreeze()
                 return
-            if iid == self.NEW and key == "name" and not val and isinstance(nxt, tuple):   # 空のまま移動
+            if iid == self.NEW and key == "name" and not val and nxt:   # 空のまま移動
                 self.finish_entry()
                 self.nav.set(self.NEW, "name")
-                self.nav.step(*nxt)
+                if nxt[0] == "row":
+                    self.nav.go(nxt)
                 self.tree.focus_set()
                 return
+            created = iid == self.NEW
             if key in ("price", "sell"):
                 pr = self.price_of(val)
                 if pr is None:
@@ -19737,8 +19851,10 @@ def run_gui(path=None):
                 self.nav.set(iid, key if key in [c[0] for c in self.COLS] else "name")
                 if iid in self._pending:
                     self.tree.see(self.NEW)   # 入力中は下の方を表示（いちばん上に飛ばない）
-            if isinstance(nxt, tuple):   # Enter・Tab・矢印：確定して隣のセルへ（エクセルと同じ）
-                self.nav.step(*nxt)
+            if self.tree.exists(iid):
+                self.nav.touch(iid, new=created)   # 入力中の行（入力を終えるか、ほかを選ぶと並べ替え）
+            if nxt:   # Enter・Tab：次のデータの欄へ／矢印：上下・隣へ
+                self.nav.go(nxt)
                 self.tree.focus_set()
 
         def edit_categories(self):
@@ -19926,7 +20042,7 @@ def run_gui(path=None):
             self.cb_amon = ttk.Combobox(top, textvariable=self.v_amon, state="readonly", width=10)
             self.cb_amon.pack(side="left", padx=4)
             self.cb_amon.bind("<<ComboboxSelected>>", lambda ev: self.refresh())
-            ttk.Label(top, text="円の色の札＝状態（W・B・H・C・S）　円の大きさ＝価格　4以上を「高」　円を左の札へドラッグで状態を変更",
+            ttk.Label(top, text="円の色＝状態（下の凡例）　円の大きさ＝価格　4以上を「高」　円を左の札へドラッグで状態を変更",
                       foreground="#868e96").pack(side="left", padx=8)
             pw = tk.PanedWindow(f, orient="vertical", sashwidth=6, bg="#dee2e6", bd=0)
             pw.pack(fill="both", expand=True, pady=(6, 0))
@@ -19936,7 +20052,7 @@ def run_gui(path=None):
             tf = ttk.Frame(pw)
             pw.add(tf, minsize=80, height=110, stretch="never")   # 月ごとの表は小さめ（境目のドラッグで広げられる）
             cols = [("mon", "月", 80), ("in_v", "購入金額", 110), ("in_n", "購入品数", 80), ("out_v", "売却金額", 110),
-                    ("out_n", "売却品数", 80)]
+                    ("out_n", "売却品数", 80), ("diff_v", "購入−売却", 110)]
             t = self.mtree = ttk.Treeview(tf, columns=[c[0] for c in cols], show="headings", height=3)
             for k, txt, wd in cols:
                 t.heading(k, text=txt)
@@ -20037,10 +20153,9 @@ def run_gui(path=None):
             c.create_text(18, (T + B) / 2, text="人\n生\n価\n値\n度\n↑", font=(fam, 9, "bold"), fill="#343a40")
             c.create_text(L, 12, anchor="w", font=(fam, 11, "bold"), fill="#212529",
                           text=f"{mon.replace('-', '年', 1)}月 の IN/OUT_Navi マップ" if mon != "すべて" else "全期間の IN/OUT_Navi マップ")
-            lgx, lgy = L, B + 46   # 状態の凡例（色と頭文字）：横軸の名前の下
+            lgx, lgy = L, B + 46   # 状態の凡例（色だけ）：横軸の名前の下
             for k_, n_, _d, col_ in self.STATUSES:
-                c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=col_, outline="")
-                c.create_text(lgx + 6, lgy, text=n_[0], font=(fam, 7, "bold"), fill="#ffffff")
+                c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=mix(col_, 0.55), outline=col_, width=2)
                 tt_ = c.create_text(lgx + 15, lgy, anchor="w", text=n_, font=(fam, 9, "bold"), fill=col_)
                 lgx = c.bbox(tt_)[2] + 12
             rows = [x for x in self.data["items"] if mon == "すべて" or self.month_of(x) == mon]
@@ -20071,32 +20186,9 @@ def run_gui(path=None):
                     tg = ("bub", "bub:" + x["id"])
                     hl = x["id"] == self._hl
                     st = self.status(x)
-                    if st == "hold":   # Hold：うすい灰色の小さめの円で目立たせない
-                        r = max(3, r * 0.7)
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#fff4e6", outline="#212529" if hl else self.SCOLOR["hold"],
-                                      width=3 if hl else 1.5, dash=() if hl else (2, 2), tags=tg)
-                    elif st == "buy":
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(col, 0.35), outline="#212529" if hl else col,
-                                      width=4 if hl else 2, tags=tg)
-                    elif st == "sold":   # Sold：紫のひし形（強調の輪の位置用に見えない円も置く）
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="", outline="", tags=tg)
-                        c.create_polygon(cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy, fill=mix("#7048e8", 0.75),
-                                         outline="#212529" if hl else "#7048e8", width=4 if hl else 2, tags=tg)
-                    elif st == "clutter":   # Clutter：赤い ✕ の付いた白い円
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="#212529" if hl else "#e03131",
-                                      width=4 if hl else 1.5, dash=() if hl else (2, 2), tags=tg)
-                        k_ = r * 0.55
-                        for sx_ in (1, -1):
-                            c.create_line(cx - k_, cy - k_ * sx_, cx + k_, cy + k_ * sx_, fill=mix("#e03131", 0.5), width=1.5, tags=tg)
-                    else:   # Wants：水色の点線の白い円
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="#212529" if hl else self.SCOLOR["wants"],
-                                      width=4 if hl else 2, dash=() if hl else (3, 2), tags=tg)
-                    if r >= 6:   # 状態の札（色つきの頭文字）：W・B・H・C・S
-                        bx_, by_ = cx + r * 0.72, cy - r * 0.72
-                        rb_ = 7 if r >= 12 else 6
-                        c.create_oval(bx_ - rb_, by_ - rb_, bx_ + rb_, by_ + rb_, fill=self.SCOLOR[st], outline="#ffffff",
-                                      width=1.5, tags=tg)
-                        c.create_text(bx_, by_, text=self.SNAME[st][0], font=(fam, 7, "bold"), fill="#ffffff", tags=tg)
+                    scol = self.SCOLOR[st]   # 状態は色だけで表す（印・形は使わない。2026-11-08 利用者の指示）
+                    c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(scol, 0.6), outline="#212529" if hl else scol,
+                                  width=4 if hl else 2.5, tags=tg)
                     nm = x.get("name", "")
                     fsz = 8 if r >= 16 else 7
                     room = max(sub - 4, r * 2)
@@ -20108,9 +20200,7 @@ def run_gui(path=None):
                         lab = lab[:-1] + "…" if len(lab) > 1 else lab
                     if room >= 18:   # 名前は円の中（小さい円は下）に
                         ty = cy if r >= 13 else cy + r + 6
-                        skip_ = st in ("hold", "clutter")
-                        c.create_text(cx, ty, text=lab, font=(fam, fsz, "normal" if skip_ else "bold"),
-                                      fill="#adb5bd" if skip_ else "#212529" if st in ("buy", "sold") else "#495057", tags=tg)
+                        c.create_text(cx, ty, text=lab, font=(fam, fsz, "bold"), fill="#212529", tags=tg)
                     self._bubbles.append(x["id"])
             if self._hl:   # 選んでいる品：赤い二重の輪と名前の札で強調
                 for it_ in c.find_withtag("bub:" + self._hl):
@@ -20197,6 +20287,7 @@ def run_gui(path=None):
             cs = self.SCOLOR
             line("購入金額（Buy → Hold）", self.yen(P["in_v"]), cs["hold"], True, f"{P['in_n']}品")
             line("売却金額（Clutter → Sold）", self.yen(P["out_v"]), cs["sold"], True, f"{P['out_n']}品")
+            line("購入金額 − 売却金額", self.yen(P["in_v"] - P["out_v"]), "#212529", True)
             c.create_text(X0, y_, anchor="nw", text="Duration（今の状態の日数）", font=(fam, 9, "bold"), fill="#495057")
             y_ += 18
             for k_, n_, _d, col_ in self.STATUSES:
@@ -20334,7 +20425,7 @@ def run_gui(path=None):
             tb, ts = sum(s_["in_v"] for s_ in stats), sum(s_["out_v"] for s_ in stats)
             c.create_text(16, y + 2, anchor="nw", font=(fam, 11, "bold"), fill="#212529",
                           text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入金額 {self.yen(tb)}"
-                               f"　売却金額 {self.yen(ts)}")
+                               f"　売却金額 {self.yen(ts)}　購入−売却 {self.yen(tb - ts)}")
             lx = W - 16
             legend = [("売却金額", "#7048e8", "box")] + \
                      [(n_, cc, "box") for _k, n_, _d, cc in reversed(self.QUAD)]
@@ -20424,14 +20515,14 @@ def run_gui(path=None):
 
             def item_row(x):
                 st = self.status(x)
-                tg_ = ("st_" + st,) if st in ("hold", "clutter", "sold") else ("q_" + self.quad(x),)
+                tg_ = ("st_" + st,)
                 if x["id"] == self._hl:
                     tg_ = tg_ + ("hl",)
                 sl = x.get("sell")
                 has_sl = sl not in (None, "")
                 r_ = self.ratio(x)
                 dur = self.duration(x, today)
-                vals = {"del": "✕", "status": "⠿ " + self.SNAME[st], "name": x.get("name", ""),
+                vals = {"del": "✕", "status": self.SNAME[st], "name": x.get("name", ""),
                         "cat": x.get("cat", "") or "（選ぶ）", "gap": "",
                         "life": self.stars(x.get("life")), "value": self.stars(x.get("value")),
                         "price": self.yen(x.get("price") or 0) if x.get("price") else "―",
@@ -20492,7 +20583,7 @@ def run_gui(path=None):
             ysum = lambda xs: self.yen(sum(int(x.get("price") or 0) for x in xs))
             P_ = self.period_stats("すべて")
             self.lbl_total.configure(text=f"購入金額 {self.yen(P_['in_v'])}（{P_['in_n']}品）　売却金額 {self.yen(P_['out_v'])}"
-                                          f"（{P_['out_n']}品）")
+                                          f"（{P_['out_n']}品）　購入−売却 {self.yen(P_['in_v'] - P_['out_v'])}")
             sub = {}
             for x in items:   # 表示中の品のカテゴリ別の小計
                 k_ = x.get("cat") or "（カテゴリなし）"
@@ -20531,9 +20622,11 @@ def run_gui(path=None):
                 row = [st_["in_v"], st_["in_n"], st_["out_v"], st_["out_n"]]
                 tot = [a_ + b_ for a_, b_ in zip(tot, row)]
                 mt.insert("", "end", iid=m_, tags=("sel",) if m_ == self.v_amon.get() else (),
-                          values=[m_.replace("-", "/"), self.yen(row[0]), f"{row[1]}品", self.yen(row[2]), f"{row[3]}品"])
+                          values=[m_.replace("-", "/"), self.yen(row[0]), f"{row[1]}品", self.yen(row[2]), f"{row[3]}品",
+                                  self.yen(row[0] - row[2])])
             mt.insert("", "end", iid="__sum__", tags=("sum",),
-                      values=["総計", self.yen(tot[0]), f"{tot[1]}品", self.yen(tot[2]), f"{tot[3]}品"])
+                      values=["総計", self.yen(tot[0]), f"{tot[1]}品", self.yen(tot[2]), f"{tot[3]}品",
+                              self.yen(tot[0] - tot[2])])
             if getattr(self, "nav", None) is not None:   # 選んでいるセルの枠
                 if self.nav.cur and not t.exists(self.nav.cur[0]):
                     self.nav.cur = None
