@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 3.8  最終更新日 2026-11-08
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 4.0  最終更新日 2026-11-08
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v3.8。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v4.0。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -2276,6 +2276,129 @@ class BgWriter:
 BG_WRITER = BgWriter()
 
 
+# ---- 復元ポイント（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避 を、このPCとデータフォルダの両方に残す ----
+RP_KINDS = (("open", "開いたとき", 30), ("hourly", "1時間ごと", 48), ("daily", "毎日", 120), ("monthly", "毎月", 36),
+            ("guard", "保存前の退避", 30), ("restore", "戻す前", 20))   # （種類, 表示名, 残す数）
+RP_NAME = {k: n for k, n, _c in RP_KINDS}
+RP_SUBDIR = "Mind_Navi_backups"   # データファイルと同じフォルダ（Google ドライブ）に作る
+
+
+def rp_dirs(path):
+    """そのデータファイルの復元ポイントの置き場所：[このPC, データファイルと同じフォルダ]"""
+    ap = os.path.abspath(path)
+    stem = os.path.splitext(os.path.basename(ap))[0]
+    local = os.path.join(BACKUP_DIR, "points", f"{stem}_{zlib.crc32(ap.encode('utf-8')) & 0xffffffff:08x}")
+    return [local, os.path.join(os.path.dirname(ap), RP_SUBDIR, stem)]
+
+
+def rp_write(path, kind, data):
+    """復元ポイントを書く（data は保存するファイルの中身。gzip で小さくする）。古いものは種類ごとに決めた数だけ残す"""
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    keep = next((c for k, _n, c in RP_KINDS if k == kind), 30)
+    raw = data if isinstance(data, bytes) else data.encode("utf-8")
+    for d in rp_dirs(path):
+        try:
+            os.makedirs(d, exist_ok=True)
+            fp = os.path.join(d, f"{kind}_{stamp}.json.gz")
+            with gzip.open(fp + ".tmp", "wb", compresslevel=6) as f:
+                f.write(raw)
+            os.replace(fp + ".tmp", fp)
+            olds = sorted(f for f in os.listdir(d) if f.startswith(kind + "_") and f.endswith(".json.gz"))
+            for f in olds[:-keep]:
+                os.remove(os.path.join(d, f))
+        except OSError:
+            pass
+
+
+def rp_list(path):
+    """復元ポイントの一覧（新しい順）：[(日時, 種類, ファイル)]。同じ時刻・種類が両方の場所にあれば1つに"""
+    seen, out = set(), []
+    for d in rp_dirs(path):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for f in names:
+            if not f.endswith(".json.gz") or "_" not in f:
+                continue
+            kind, stamp = f[:-8].split("_", 1)
+            try:
+                t = datetime.datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+            except ValueError:
+                continue
+            if (kind, stamp) in seen:
+                continue
+            seen.add((kind, stamp))
+            out.append((t, kind, os.path.join(d, f)))
+    return sorted(out, reverse=True)
+
+
+def rp_due(path, now_=None):
+    """保存するときに残すべき定期の復元ポイント（1時間ごと・毎日・毎月）"""
+    now_ = now_ or datetime.datetime.now()
+    last = {}
+    for t, kind, _f in rp_list(path):
+        last.setdefault(kind, t)
+    due = []
+    if "hourly" not in last or now_ - last["hourly"] >= datetime.timedelta(hours=1):
+        due.append("hourly")
+    if "daily" not in last or last["daily"].date() != now_.date():
+        due.append("daily")
+    if "monthly" not in last or (last["monthly"].year, last["monthly"].month) != (now_.year, now_.month):
+        due.append("monthly")
+    return due
+
+
+def read_data_file(fp):
+    """データファイル（.json か .json.gz）を読む"""
+    if fp.endswith(".gz"):
+        with gzip.open(fp, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    with open(fp, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def shop_informed(x):
+    """IN/OUT_Navi の品に、状態・★・売却価格などの入力があるか（消えてしまった品は False）"""
+    return bool(isinstance(x, dict) and (x.get("status") not in (None, "wants") or int(x.get("life") or 4) != 4 or
+                                         int(x.get("value") or 4) != 4 or x.get("sell") not in (None, "") or
+                                         len(x.get("status_log") or []) > 1))
+
+
+def data_score(d):
+    """データの大きさの目安：ノード数・IN/OUT_Navi の品数と入力のある品数・買い物リストの品数"""
+    v = (d or {}).get("view") or {}
+    sh = v.get("shopping") if isinstance(v.get("shopping"), dict) else {}
+    gr = v.get("groceries") if isinstance(v.get("groceries"), dict) else {}
+    items = [x for x in sh.get("items") or [] if isinstance(x, dict)]
+    return {"nodes": len((d or {}).get("nodes") or []), "shop": len(items),
+            "shop_info": sum(1 for x in items if shop_informed(x)), "groc": len(gr.get("items") or [])}
+
+
+def shopping_fill_lost(cur, old):
+    """IN/OUT_Navi の消えた入力を、古いデータ old から補う。同じ id の品で、今は入力が消えている（Wants・★4・売却価格なし）
+    ものだけに、状態・★・売却価格・履歴などを戻す（あとで入力し直した品はそのまま）。戻した品の数を返す"""
+    import copy as _copy
+    old = shopping_upgrade(_copy.deepcopy(old))
+    src = {x.get("id"): x for x in old.get("items") or [] if isinstance(x, dict)}
+    keys = ("status", "status_date", "status_log", "life", "value", "sell", "bought", "plan", "skip")
+    n = 0
+    for x in cur.get("items") or []:
+        o = src.get(x.get("id"))
+        if not o or shop_informed(x) or not shop_informed(o):
+            continue
+        for k in keys:
+            if k in o:
+                x[k] = _copy.deepcopy(o[k])
+        for k, val in o.items():   # 今のデータに無い項目も戻す
+            x.setdefault(k, _copy.deepcopy(val))
+        n += 1
+    for k in ("hold_limits",):
+        if not cur.get(k) and old.get(k):
+            cur[k] = _copy.deepcopy(old[k])
+    return n
+
+
 def version_dir(path):
     ap = os.path.abspath(path)
     stem = os.path.splitext(os.path.basename(ap))[0]
@@ -2286,6 +2409,115 @@ def version_dir(path):
 GROCERY_COLUMNS = (("chk", "購入", 46), ("name", "品名", 190), ("qty", "個数", 46), ("price", "価格", 80),
                    ("sub", "小計", 84), ("need", "必要度 ▾", 70), ("wk", "週", 38), ("mo", "月", 38), ("yr", "年", 42))
 GROCERY_LAYOUT_VER = 2
+
+
+# ---- データの読み替え（2026-11-08 作り直し：何度呼んでも同じ結果・知らない項目は消さない・作り直さない） ----
+SHOP_STATUS_KEYS = ("wants", "buy", "hold", "clutter", "sold")
+SHOP_VERSION = 4
+
+
+def _shop_from_old(lv):
+    """最初の形式の3段階（1＝高い）→ 5段階（5＝高い）"""
+    return {"1": 5, "2": 3, "3": 1}.get(str(lv), 3)
+
+
+def shopping_upgrade(d):
+    """IN/OUT_Navi（旧 購入分析）のデータを今の形式（v4）にそろえる。
+    形式の番号 v：なし＝最初の形式、2＝5段階、3＝6段階、4＝状態つき。今より新しい番号ならさわらない。
+    【大事】以前の版（3.8）では v4 を「最初の形式」と取り違えて品を作り直し、状態・★などを消していた。
+    ここでは品を作り直さず、足りない項目を足すだけにする（何度呼んでも結果は同じ）"""
+    if not isinstance(d, dict):
+        return d
+    try:
+        v = int(d.get("v")) if d.get("v") is not None else 1
+    except (TypeError, ValueError):
+        v = 1
+    if v > SHOP_VERSION:
+        return d   # 新しい版で作ったデータ：知らない形式は変えない
+    d.setdefault("categories", ["食品", "日用品", "衣類", "趣味", "仕事・勉強", "交際", "その他"])
+    items = d.setdefault("items", [])
+    if v <= 1:   # 最初の形式（必要度・重要度、購入済みは別の表）
+        for x in items:
+            x.setdefault("id", uuid.uuid4().hex[:8])
+            if "life" not in x:
+                x["life"] = _shop_from_old(x.get("need"))
+            if "value" not in x:
+                x["value"] = _shop_from_old(x.get("imp"))
+            x["price"] = int(x.get("price") or 0)
+            x.setdefault("daily", False)
+            x.setdefault("added", datetime.date.today().isoformat())
+            x.setdefault("bought", "")
+        for b in d.pop("bought", None) or []:   # 購入済みの表 → 品（購入日つき）
+            if not isinstance(b, dict):
+                continue
+            y = dict(b)
+            y.setdefault("id", uuid.uuid4().hex[:8])
+            if "life" not in y:
+                y["life"] = _shop_from_old(b.get("need"))
+            if "value" not in y:
+                y["value"] = _shop_from_old(b.get("imp"))
+            y["price"] = int(y.get("price") or 0)
+            y.setdefault("daily", False)
+            y.setdefault("added", b.get("date") or "")
+            y["bought"] = b.get("date") or y.get("bought") or ""
+            items.append(y)
+        v = 2
+    if v == 2:   # 5段階 → 6段階（1→1, 2→2, 3→4, 4→5, 5→6）
+        for x in items:
+            for k in ("life", "value"):
+                try:
+                    x[k] = {1: 1, 2: 2, 3: 4, 4: 5, 5: 6}.get(int(x.get(k) or 3), 4)
+                except (TypeError, ValueError):
+                    x[k] = 4
+        v = 3
+    if v == 3:   # 状態（Wants・Buy・Hold・Clutter・Sold）へ：購入済み・購入予定→Buy、今は買わない→Hold、ほか→Wants
+        for x in items:
+            if x.get("status") not in SHOP_STATUS_KEYS:
+                st = "buy" if (x.get("bought") or x.get("plan")) else "hold" if x.get("skip") else "wants"
+                x["status"] = st
+                x["status_date"] = (x.get("bought") if st == "buy" and x.get("bought") else x.get("added")) or \
+                    datetime.date.today().isoformat()
+                x.setdefault("status_log", [{"s": st, "d": x["status_date"]}])
+        d.pop("order", None)   # 状態ごとのまとまりに並べ直す（1回だけ）
+        d.pop("groups", None)
+        v = 4
+    for x in items:   # 今の形式でも足りない項目は足す（あるものは変えない）
+        if isinstance(x, dict) and x.get("status") not in SHOP_STATUS_KEYS:
+            x["status"] = "wants"
+            x.setdefault("status_date", x.get("added") or datetime.date.today().isoformat())
+            x.setdefault("status_log", [{"s": "wants", "d": x["status_date"]}])
+    d["v"] = v
+    d.setdefault("hold_limits", {})   # カテゴリ → Hold の上限数
+    return d
+
+
+def groceries_normalize(d):
+    """買い物リストのデータを今の形式にそろえる（何度呼んでも同じ。個数・価格などの入力は消さない）。
+    【大事】以前は開くたびに個数（qty）を消して1に戻していた"""
+    if not isinstance(d, dict):
+        return d
+    d.setdefault("staples", [])
+    d.setdefault("items", [])
+    d.setdefault("history", [])
+    for x in d["items"]:   # 以前の形式（売り場・メモ・done）を読みかえる
+        if "done" in x:
+            x["bought"] = bool(x.pop("done"))
+        for k in ("sec", "memo"):
+            x.pop(k, None)
+        try:   # 個数：数なら残す（最初の形式の文字の「数量」だけ 1 に）
+            x["qty"] = max(1, int(float(unicodedata.normalize("NFKC", str(x.get("qty", 1))))))
+        except (TypeError, ValueError):
+            x["qty"] = 1
+        x.setdefault("need", 2)
+        x.setdefault("price", 0)
+    for x in d["staples"]:
+        for k in ("sec", "qty", "last", "every"):
+            x.pop(k, None)
+        x.setdefault("need", 2)
+        x.setdefault("price", 0)
+    d.pop("sections", None)
+    d["layout"] = {"v": GROCERY_LAYOUT_VER, "columns": [[k, t.replace(" ▾", ""), w] for k, t, w in GROCERY_COLUMNS]}
+    return d
 
 def install_ime_font_fix(root):
     """Windows：日本語入力（IME）の変換中の文字が、入力欄より大きな文字で別に表示されるのを防ぐ。
@@ -3338,9 +3570,14 @@ def run_gui(path=None):
             return True
 
         def _write_doc(self, path, mm, history=None):
-            """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存"""
-            txt = json.dumps(mm.to_dict(), ensure_ascii=False, indent=2)
+            """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存。
+            保存の前に、データが大きく減っていないか確かめる（減っていれば前の中身を「保存前の退避」として残して知らせる）。
+            1時間ごと・毎日・毎月の復元ポイントも残す"""
+            d_ = mm.to_dict()
+            txt = json.dumps(d_, ensure_ascii=False, indent=2)
             data = txt.encode("utf-8")
+            ap = os.path.abspath(path)
+            self._save_guard(path, ap, d_)
             tmp = path + ".tmp"
             with open(tmp, "wb") as f:
                 f.write(data)
@@ -3353,13 +3590,45 @@ def run_gui(path=None):
                     os.replace(mp + ".tmp", mp)
                 except OSError:
                     pass
-            ap = os.path.abspath(path)
             self._known_mtime[ap] = os.path.getmtime(path)
             self.__dict__.setdefault("_core_sigs", {})[ap] = self._core_sig(json.loads(txt))
+            self.__dict__.setdefault("_saved_score", {})[ap] = data_score(d_)
+            for kind in rp_due(path):   # 定期の復元ポイント（書き込みは別の処理で）
+                BG_WRITER.put(lambda kind=kind, data=data: rp_write(path, kind, data))
             self._groc_local = False
             self._file_sha[ap] = hashlib.sha1(data).hexdigest()
             if history is not None:
                 self._save_undo(path, history)
+
+        def _save_guard(self, path, ap, d_):
+            """保存しようとしているデータが、前に保存したときより大きく減っていないか（不具合での消失を防ぐ）。
+            減っていたら、今のファイルの中身を「保存前の退避」の復元ポイントとして残し、入力が消えたときは知らせる"""
+            prev = (getattr(self, "_saved_score", None) or {}).get(ap)
+            if not prev or not os.path.exists(path):
+                return
+            now_ = data_score(d_)
+            drop = [k for k in prev if prev[k] >= 5 and now_.get(k, 0) < prev[k] * 0.5]
+            if not drop:
+                return
+            try:
+                with open(path, "rb") as f:
+                    old = f.read()
+            except OSError:
+                return
+            rp_write(path, "guard", old)   # 確実に残す（その場で書く）
+            names = {"nodes": "ノード", "shop": "IN/OUT_Navi の品", "shop_info": "IN/OUT_Navi の入力（状態・★など）",
+                     "groc": "買い物リストの品"}
+            msg = "、".join(f"{names[k]} {prev[k]}→{now_.get(k, 0)}" for k in drop)
+            self.set_status(f"⚠ データが大きく減りました（{msg}）。前の中身を復元ポイント「保存前の退避」に残しました")
+            wiped = "shop_info" in drop and now_.get("shop", 0) >= prev.get("shop", 0) * 0.9   # 品はあるのに入力だけ消えた
+            if wiped or "nodes" in drop:
+                try:
+                    messagebox.showwarning(APP_NAME, f"保存しようとしているデータが、前より大きく減っています。\n\n{msg}\n\n"
+                                                     "念のため、前の中身を復元ポイント「保存前の退避」に残しました。\n"
+                                                     "意図しない変化なら［ファイル］→［復元ポイントから戻す…］で戻せます。",
+                                           parent=self.root)
+                except tk.TclError:
+                    pass
 
         def _undo_path(self, path):
             return os.path.join(version_dir(path), "undo.json.gz")
@@ -3473,8 +3742,12 @@ def run_gui(path=None):
                 with open(p, "rb") as fb_:
                     raw_ = fb_.read()
                 self._file_sha[os.path.abspath(p)] = hashlib.sha1(raw_).hexdigest()
+                if p.lower().endswith(".json") and raw_:   # 開いたときの中身を、読み替える前にそのまま復元ポイントへ
+                    BG_WRITER.put(lambda p=p, raw_=raw_: rp_write(p, "open", raw_))
                 try:
-                    self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(json.loads(raw_.decode("utf-8")))
+                    d0_ = json.loads(raw_.decode("utf-8"))
+                    self.__dict__.setdefault("_core_sigs", {})[os.path.abspath(p)] = self._core_sig(d0_)
+                    self.__dict__.setdefault("_saved_score", {})[os.path.abspath(p)] = data_score(d0_)
                 except ValueError:
                     pass
             except OSError:
@@ -3620,57 +3893,177 @@ def run_gui(path=None):
                 self._after_load()
                 self.set_status("バックアップから開きました。「名前を付けて保存」で保存してください")
 
-        def restore_dialog(self):
-            """今のマップを、画面切り替えごとに残したバックアップの版から選んで復元する"""
+        def restore_dialog(self, focus=None):
+            """復元ポイントから戻す（2026-11-08）：開いたとき・1時間ごと・毎日・毎月・保存前の退避・自動保存の版 から選び、
+            全部／IN/OUT_Navi だけ／買い物リストだけ を戻す、または IN/OUT_Navi の消えた入力だけを補う。
+            戻す前の中身も復元ポイント「戻す前」に残すので、やり直せる"""
             if not self.path:
-                messagebox.showinfo(APP_NAME, "保存先のあるマップで使えます（無題のマップは起動時にバックアップを確認します）",
-                                    parent=self.root)
+                messagebox.showinfo(APP_NAME, "保存先のあるマップで使えます", parent=self.root)
                 return
-            self.on_transition("復元の前")
-            cands = self._backup_candidates(self.path)
-            if not cands:
-                messagebox.showinfo(APP_NAME, "このマップのバックアップはまだありません", parent=self.root)
-                return
+            self.on_transition("復元の前", defer=False)
+            BG_WRITER.flush()
+            cands = [(t, RP_NAME.get(k, k), fp) for t, k, fp in rp_list(self.path)]
+            for t_, bp in self._backup_candidates(self.path):   # 以前からの自動保存の版・同じフォルダのバックアップ
+                kind = "同じフォルダの .backup" if bp == mirror_path(self.path) else "自動保存の版"
+                cands.append((datetime.datetime.fromtimestamp(t_), kind, bp))
+            for lp in (SHOP_PATH, SHOP_PATH + ".imported"):   # 以前このPCだけに保存していた IN/OUT_Navi（購入分析）
+                if os.path.exists(lp):
+                    cands.append((datetime.datetime.fromtimestamp(os.path.getmtime(lp)), "以前のPCの購入分析", lp))
+            cands.sort(key=lambda c: c[0], reverse=True)
             w = tk.Toplevel(self.root)
-            w.title("バックアップから復元")
+            w.title("復元ポイントから戻す")
             w.transient(self.root)
-            ttk.Label(w, text=f"「{os.path.basename(self.path)}」のバックアップ（新しい順）\n"
-                              "選んで［復元］を押すと、その時点の内容に戻します（Ctrl+Z で取り消せます）",
-                      padding=(10, 8)).pack(anchor="w")
-            lb = tk.Listbox(w, height=min(15, len(cands)), width=44, font=(self.fam_base, 10))
-            lb.pack(fill="both", expand=True, padx=10)
-            for t_, bp in cands:
-                try:
-                    with open(bp, encoding="utf-8") as fp:
-                        k = len(json.load(fp).get("nodes") or [])
-                    info = f"ノード {k}"
-                except (OSError, ValueError, AttributeError):
-                    info = "（読めません）"
-                lb.insert("end", f"{_mtime_text(t_)}　{info}")
-            lb.selection_set(0)
+            w.geometry("860x560")
+            ttk.Label(w, padding=(10, 8), wraplength=820, justify="left",
+                      text=f"「{os.path.basename(self.path)}」の復元ポイント（新しい順）。選ぶと下に中身の数を表示します。\n"
+                           "戻す前の中身は復元ポイント「戻す前」に残るので、いつでもやり直せます。"
+                           "Google ドライブの「版を管理」でダウンロードした古いファイルは［ファイルを選ぶ…］で使えます。").pack(anchor="w")
+            tf = ttk.Frame(w)
+            tf.pack(fill="both", expand=True, padx=10)
+            tv = ttk.Treeview(tf, columns=("t", "k", "w"), show="headings", selectmode="browse")
+            for c, txt, wd in (("t", "日時", 170), ("k", "種類", 170), ("w", "場所", 460)):
+                tv.heading(c, text=txt)
+                tv.column(c, width=wd, anchor="w")
+            sb = ttk.Scrollbar(tf, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            tv.pack(fill="both", expand=True)
+            rows = {}
 
-            def do():
-                sel = lb.curselection()
+            def add(t, kind, fp, top=False):
+                iid = f"r{len(rows)}"
+                rows[iid] = fp
+                where = "このPC" if os.path.abspath(fp).startswith(os.path.abspath(BACKUP_DIR)) else os.path.dirname(fp)
+                tv.insert("", 0 if top else "end", iid=iid, values=(t.strftime("%Y/%m/%d %H:%M:%S"), kind, where))
+                return iid
+            for t, kind, fp in cands:
+                add(t, kind, fp)
+            info = tk.StringVar(value="（復元ポイントを選んでください）")
+            ttk.Label(w, textvariable=info, padding=(10, 6), foreground="#1864ab",
+                      font=(self.fam_base, 10, "bold")).pack(anchor="w")
+            cache = {}
+
+            def load(iid):
+                fp = rows[iid]
+                if fp not in cache:
+                    d = read_data_file(fp)
+                    if isinstance(d, dict) and "nodes" not in d and "items" in d:   # IN/OUT_Navi だけのファイル
+                        d = {"nodes": [], "view": {"shopping": d}}
+                    cache[fp] = d
+                return cache[fp]
+
+            def on_sel(ev=None):
+                sel = tv.selection()
                 if not sel:
                     return
-                bp = cands[sel[0]][1]
                 try:
-                    with open(bp, encoding="utf-8") as fp:
-                        d = json.load(fp)
-                    MindNavi.from_dict(d)
-                except (OSError, ValueError, KeyError, TypeError) as err:
-                    messagebox.showerror(APP_NAME, f"このバックアップは読み込めません:\n{err}", parent=w)
+                    sc = data_score(load(sel[0]))
+                except (OSError, ValueError, EOFError) as err:
+                    info.set(f"読めません：{err}")
                     return
-                self.checkpoint()
-                self._restore(json.dumps(d, ensure_ascii=False))
-                w.destroy()
-                self.on_transition("復元")
-                self.set_status(f"バックアップ（{_mtime_text(cands[sel[0]][0])}）から復元しました（Ctrl+Z で元に戻せます）")
+                cur = data_score(self.mm.to_dict())
+                info.set(f"この時点：ノード {sc['nodes']}　IN/OUT_Navi {sc['shop']}品（入力あり {sc['shop_info']}）　"
+                         f"買い物リスト {sc['groc']}品　　｜　今：ノード {cur['nodes']}　IN/OUT_Navi {cur['shop']}品"
+                         f"（入力あり {cur['shop_info']}）　買い物リスト {cur['groc']}品")
+            tv.bind("<<TreeviewSelect>>", on_sel)
+
+            def pick_file():
+                fp = filedialog.askopenfilename(parent=w, title="戻すのに使うデータファイル",
+                                                filetypes=[("Mind_Navi のデータ", "*.json *.json.gz"), ("すべて", "*.*")])
+                if fp:
+                    iid = add(datetime.datetime.fromtimestamp(os.path.getmtime(fp)), "選んだファイル", fp, top=True)
+                    tv.selection_set(iid)
+                    tv.see(iid)
+
+            def do(mode):
+                sel = tv.selection()
+                if not sel:
+                    messagebox.showinfo(APP_NAME, "復元ポイントを選んでください", parent=w)
+                    return
+                try:
+                    d = load(sel[0])
+                except (OSError, ValueError, EOFError) as err:
+                    messagebox.showerror(APP_NAME, f"このファイルは読めません：\n{err}", parent=w)
+                    return
+                msg = self._apply_restore(d, mode, parent=w)
+                if msg:
+                    info.set(msg)
+                    messagebox.showinfo(APP_NAME, msg, parent=w)
+                    on_sel()
             bf = ttk.Frame(w, padding=8)
             bf.pack(fill="x")
-            ttk.Button(bf, text="復元", command=do).pack(side="right")
-            ttk.Button(bf, text="キャンセル", command=w.destroy).pack(side="right", padx=6)
-            lb.bind("<Double-Button-1>", lambda ev: do())
+            ttk.Button(bf, text="ファイルを選ぶ…", command=pick_file).pack(side="left")
+            ttk.Button(bf, text="閉じる", command=w.destroy).pack(side="right")
+            for txt, mode in (("全部をこの時点に戻す", "all"), ("買い物リストだけ戻す", "groc"), ("IN/OUT_Navi だけ戻す", "shop"),
+                              ("IN/OUT_Navi の消えた入力を補う", "fill")):
+                ttk.Button(bf, text=txt, command=lambda m=mode: do(m)).pack(side="right", padx=3)
+            if rows:
+                first = next(iter(rows))
+                if focus == "fill":   # IN/OUT_Navi の入力がいちばん多いものを選んでおく
+                    best = None
+                    for iid in list(rows)[:200]:
+                        try:
+                            n_ = data_score(load(iid))["shop_info"]
+                        except (OSError, ValueError, EOFError):
+                            continue
+                        if best is None or n_ > best[0]:
+                            best = (n_, iid)
+                    first = best[1] if best else first
+                tv.selection_set(first)
+                tv.see(first)
+
+        def _apply_restore(self, d, mode, parent=None):
+            """復元ポイントの中身 d を戻す。mode：all＝全部、shop＝IN/OUT_Navi、groc＝買い物リスト、fill＝IN/OUT_Navi の消えた入力を補う"""
+            v = (d or {}).get("view") or {}
+            if mode in ("shop", "fill") and not isinstance(v.get("shopping"), dict):
+                messagebox.showinfo(APP_NAME, "この復元ポイントには IN/OUT_Navi のデータがありません", parent=parent)
+                return None
+            if mode == "groc" and not isinstance(v.get("groceries"), dict):
+                messagebox.showinfo(APP_NAME, "この復元ポイントには買い物リストのデータがありません", parent=parent)
+                return None
+            if mode == "all" and not d.get("nodes"):
+                messagebox.showinfo(APP_NAME, "このファイルはマップ全体のデータではありません（IN/OUT_Navi だけ戻せます）", parent=parent)
+                return None
+            names = {"all": "全部", "shop": "IN/OUT_Navi", "groc": "買い物リスト", "fill": "IN/OUT_Navi の消えた入力"}
+            if mode != "fill" and not messagebox.askyesno(APP_NAME, f"{names[mode]}をこの時点に戻しますか？\n"
+                                                                     "（今の中身は復元ポイント「戻す前」に残します）", parent=parent):
+                return None
+            BG_WRITER.flush()
+            if self.path and os.path.exists(self.path):   # 戻す前の中身を残す（やり直せるように）
+                try:
+                    with open(self.path, "rb") as f:
+                        rp_write(self.path, "restore", f.read())
+                except OSError:
+                    pass
+            self._close_data_windows()
+            import copy as _copy
+            if mode == "all":
+                self.checkpoint()
+                self._restore(json.dumps(d, ensure_ascii=False))
+                for k in SHARED_VIEW_KEYS:   # 別画面のデータもこの時点に
+                    if k in v:
+                        self.mm.view[k] = _copy.deepcopy(v[k])
+                msg = "全部をこの時点に戻しました"
+            elif mode == "shop":
+                self.mm.view["shopping"] = shopping_upgrade(_copy.deepcopy(v["shopping"]))
+                msg = "IN/OUT_Navi をこの時点に戻しました"
+            elif mode == "groc":
+                self.mm.view["groceries"] = groceries_normalize(_copy.deepcopy(v["groceries"]))
+                msg = "買い物リストをこの時点に戻しました"
+            else:
+                cur = self.mm.view.setdefault("shopping", {})
+                shopping_upgrade(cur)
+                n = shopping_fill_lost(cur, v["shopping"])
+                msg = (f"IN/OUT_Navi の {n} 品に、消えていた入力（状態・★・売却価格など）を戻しました" if n else
+                       "この復元ポイントからは、補える入力はありませんでした（別の時点を選んでください）")
+                if not n:
+                    return msg
+            self.dirty = True
+            self.touch()
+            self.redraw()
+            self.on_transition("復元", defer=False)
+            self.set_status(msg)
+            return msg
 
         def open_backup_folder(self):
             os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -4025,7 +4418,7 @@ def run_gui(path=None):
             dl.add_command(label="取り込んだ勤務・休みをすべて削除…", command=self.delete_all_shifts)
             f.add_cascade(label="取り込んだデータの削除", menu=dl)
             f.add_separator()
-            f.add_command(label="バックアップから復元…", command=self.restore_dialog)
+            f.add_command(label="復元ポイント（バックアップ）から戻す…", command=self.restore_dialog)
             f.add_command(label="自動バックアップのフォルダを開く", command=self.open_backup_folder)
             f.add_separator()
             f.add_command(label="終了", command=self.on_close)
@@ -5564,6 +5957,7 @@ def run_gui(path=None):
                                        font=(self.fam_base, 11, "bold"), padx=6, pady=4)
             self.list_title.pack(side="left", fill="x", expand=True)
             ttk.Button(hdr_, text="📊 分析マップ", command=self.open_task_ana).pack(side="right", padx=2, pady=2)
+            ttk.Button(hdr_, text="⇅ 並べ替える", command=self.resort_list).pack(side="right", padx=2, pady=2)
             sf_ = ttk.Frame(p)   # タスク名で検索（いちばん上）
             sf_.pack(fill="x", pady=(4, 0))
             ttk.Label(sf_, text="🔍").pack(side="left")
@@ -5681,6 +6075,9 @@ def run_gui(path=None):
             t.bind("<<TreeviewSelect>>", self.on_focus_select)
             t.bind("<Delete>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
             t.bind("<BackSpace>", lambda ev: (self.untask(self.sel) if self.sel in self.mm.nodes else None, "break")[1])
+            # エクセルと同じ操作：セルを選んで矢印・Tab・Enter で移動、文字を打つと入力（タスク名）、数字キーで 重・必・緊
+            self.list_nav = GridNav(t, list(LIST_COLS), self._list_can_edit, self._list_begin, self._list_activate,
+                                    lambda i: i in self.mm.nodes or i == "__newtask__")
 
             def list_press(ev):   # 選んである行をもう一度クリック → マップ⇔カレンダー
                 iid = t.identify_row(ev.y)
@@ -6187,8 +6584,8 @@ def run_gui(path=None):
             p_ = self.mm.parent(base)
             return bool((self.mm.nodes.get(base) or n).get("adhoc") or (p_ and (self.mm.nodes.get(p_) or {}).get("adhoc_root")))
 
-        def begin_new_task(self):
-            """タスクリストのいちばん下の行に直接入力して、新しいタスクを追加"""
+        def begin_new_task(self, init=None):
+            """タスクリストのいちばん下の行に直接入力して、新しいタスクを追加（Enter で追加して下の行へ。続けて打てば次のタスク）"""
             t = self.focus_tree
             if not t.exists("__newtask__"):
                 return
@@ -6201,8 +6598,13 @@ def run_gui(path=None):
             e = tk.Entry(t, textvariable=v, font=(self.fam_base, 10), relief="solid", bd=1)
             e.place(x=bb[0], y=bb[1], width=max(bb[2], 160), height=bb[3])
             e.focus_set()
+            GridNav.start_text(e, v, init)
+            st = {"done": False}
 
-            def done(commit=True):
+            def done(commit=True, nxt=None):
+                if st["done"]:
+                    return
+                st["done"] = True
                 txt = v.get().strip()
                 try:
                     e.destroy()
@@ -6210,10 +6612,112 @@ def run_gui(path=None):
                     pass
                 if commit and txt:
                     self.add_task_from_list(txt)
-                    self.root.after(30, self.begin_new_task)   # 続けて入力できるように
-            e.bind("<Return>", lambda ev: (done(True), "break")[1])
+                nav = self.list_nav
+                if t.exists("__newtask__"):
+                    nav.set("__newtask__", "label")   # 新しい行にカーソル：続けて打てば次のタスク
+                t.focus_set()
+            self.list_nav.entry_keys(e, lambda dr, dc, wrap: done(True, (dr, dc, wrap)))
             e.bind("<Escape>", lambda ev: (done(False), "break")[1])
             e.bind("<FocusOut>", lambda ev: done(bool(v.get().strip())) if e.winfo_exists() else None)
+
+        # ---- タスクリスト：エクセルと同じ操作 ----
+        def resort_list(self):
+            """「⇅ 並べ替える」：今の並べ替えの設定で並べ直す（完了したタスクも完了済みへ）"""
+            self._list_resnap = True
+            self.refresh_focus_list()
+            self.set_status("タスクリストを並べ替えました")
+
+        def _list_can_edit(self, iid, key):
+            return key == "label" and (iid == "__newtask__" or iid in self.mm.nodes)
+
+        def _list_begin(self, iid, key, init=None):
+            if iid == "__newtask__":
+                self.begin_new_task(init)
+                return
+            if iid not in self.mm.nodes or key != "label":
+                return
+            t = self.focus_tree   # タスク名をその場で変える（リストと同じ文字の大きさ）
+            t.see(iid)
+            t.update_idletasks()
+            bb = t.bbox(iid, LCOL["label"])
+            if not bb:
+                return
+            n = self.mm.nodes[iid]
+            v = tk.StringVar(value=n.get("label", ""))
+            fnt = ttk.Style().lookup("Focus.Treeview", "font") or (self.fam_base, 10)
+            e = tk.Entry(t, textvariable=v, font=fnt, relief="solid", bd=1)
+            e.place(x=bb[0], y=bb[1], width=max(bb[2], 120), height=bb[3])
+            e.focus_set()
+            GridNav.start_text(e, v, init)
+            st = {"done": False}
+
+            def done(commit=True, nxt=None):
+                if st["done"]:
+                    return
+                st["done"] = True
+                txt = v.get().strip()
+                try:
+                    e.destroy()
+                except tk.TclError:
+                    pass
+                if commit and txt and iid in self.mm.nodes and txt != self.mm.nodes[iid].get("label"):
+                    self.checkpoint()
+                    self.mm.nodes[iid]["label"] = txt
+                    self.mm.nodes[iid]["updated"] = now()
+                    self.touch()   # 並びは変えない
+                    self.redraw()
+                if t.exists(iid):
+                    self.list_nav.set(iid, "label")
+                    if nxt:
+                        self.list_nav.step(*nxt)
+                t.focus_set()
+            self.list_nav.entry_keys(e, lambda dr, dc, wrap: done(True, (dr, dc, wrap)))
+            e.bind("<Escape>", lambda ev: (done(False), "break")[1])
+            e.bind("<FocusOut>", lambda ev: done(True) if e.winfo_exists() else None)
+
+        def _list_activate(self, iid, key, ch):
+            """タスク名以外の欄：□＝スペース・Enter で完了、重・必・緊＝1〜6 のキー、分類・日時・カテゴリ・📝＝Enter で設定"""
+            if iid == "__newtask__":
+                if ch == "\r":
+                    self.begin_new_task()
+                    return True
+                return False
+            n = self.mm.nodes.get(iid)
+            if not n:
+                return False
+            if key == "chk" and ch in (" ", "\r") and not n.get("reusable"):
+                self.select(iid)
+                self.toggle_done()
+                self.list_nav.set(iid, key)
+                return True
+            if key in ("imp", "need", "urg") and ch and ch in "123456":
+                self.checkpoint()
+                n[key] = int(ch)
+                n["updated"] = now()
+                self.touch()   # 並びは変えない
+                self.redraw()
+                self.list_nav.set(iid, key)
+                return True
+            if ch != "\r" and not (key == "cat" and ch == " "):
+                return False
+            self.select(iid)
+            if key in ("quad", "imp", "need", "urg"):
+                self.root.after(10, lambda: self.index_dialog(iid))
+            elif key == "due":
+                self.root.after(10, self.schedule_dialog)
+            elif key == "memo":
+                self.root.after(10, lambda: self.memo_dialog(iid))
+            elif key == "cat":
+                t = self.focus_tree
+                bb = t.bbox(iid, LCOL["cat"])
+                m = tk.Menu(self.root, tearoff=0)
+                self._fill_category_menu(m)
+                if bb:
+                    x, y = t.winfo_rootx() + bb[0], t.winfo_rooty() + bb[1] + bb[3]
+                    self.root.after(30, lambda: m.tk_popup(x, y))
+            else:
+                return False
+            return True
 
         def sort_list(self, key):
             """タスクリストの見出し（重・必・緊・分類）：小さい順（1位が上）→ 大きい順 → 並べ替えなし"""
@@ -6225,6 +6729,7 @@ def run_gui(path=None):
             else:
                 self.list_sort = None
             self.save_settings()
+            self._list_resnap = True   # 見出しで並べ替え ＝「並べ替える」を押したのと同じ
             self.refresh_focus_list()
             ls_ = self.list_sort
             self.set_status(f"タスクリストを{LIST_SORTS[ls_[0]]}で並べ替えました（{'6が上' if ls_[1] else '1位が上'}）"
@@ -6296,6 +6801,10 @@ def run_gui(path=None):
                 if gid == "__normal__":   # Adhoc は未完了タスクのいちばん下
                     rows = [r_ for r_ in rows if not self.is_adhoc(self.mm.nodes[r_[0]])] + \
                            [r_ for r_ in rows if self.is_adhoc(self.mm.nodes[r_[0]])]
+                if snap:   # 並べ替えたときの順番のまま（あとから増えたタスクはまとまりの下へ）
+                    big = len(snap) + 1
+                    rows = [r_ for _k, r_ in sorted(enumerate(rows), key=lambda kr: (snap[kr[1][0]][1] if kr[1][0] in snap
+                                                                                     else big + kr[0]))]
                 for iid, vals, tg in rows:
                     if gid == "__remind__" and (self.mm.nodes.get(iid) or {}).get("remind", {}).get("pin"):
                         continue   # 📌 常に表示：一覧の上の別の欄に（スクロールしても見える）
@@ -6334,6 +6843,16 @@ def run_gui(path=None):
             finished = [n for n in items if self.is_done(n) and n not in daily and n not in weekly]   # 完了済み（ふだんはたたむ）
             normal = [n for n in items if n not in daily and n not in weekly and n not in finished]
             normal.sort(key=lambda n: (self.is_placed(n),))   # 未配置を先に
+            snap = self._list_snap if getattr(self, "_list_snap_mm", None) == id(self.mm) and \
+                not getattr(self, "_list_resnap", False) else None
+            if snap:   # エクセルと同じ：「並べ替える」を押すまで、行の場所（まとまり・順番）を変えない（完了にしても動かない）
+                pools = {"__normal__": normal, "__daily__": daily, "__weekly__": weekly, "__done__": finished}
+                newp = {g: [] for g in pools}
+                for g, xs in pools.items():
+                    for n in xs:
+                        g2 = (snap.get(n["id"]) or (None,))[0]
+                        newp[g2 if g2 in pools else g].append(n)
+                normal, daily, weekly, finished = newp["__normal__"], newp["__daily__"], newp["__weekly__"], newp["__done__"]
             if rems:
                 near = dl_(rems[0])   # 見出し：いちばん直近の期限日
                 head_ = (f"{_ymd_text(near)}（{remind_left(rems[0]).replace('残り', '')}）" if near else remind_left(rems[0]))
@@ -6358,6 +6877,13 @@ def run_gui(path=None):
             if not q_:   # いちばん下の行：ここに直接入力して新しいタスクを追加
                 t.insert("", "end", iid="__newtask__", tags=("newrow",),
                          values=list_vals("", "＋ 新しいタスク（クリックして入力）", "", "", quad=""))
+            if not snap and not q_ and flt == "すべて":   # 並べ替えた結果を覚える（次に「並べ替える」を押すまでこの並び）
+                rec_, pos_ = {}, 0
+                for gid_ in t.get_children(""):
+                    for iid_ in t.get_children(gid_):
+                        rec_.setdefault(iid_, (gid_, pos_))
+                        pos_ += 1
+                self._list_snap, self._list_snap_mm, self._list_resnap = rec_, id(self.mm), False
             items = allitems
             if self.sel in self.mm.nodes and t.exists(self.sel) and t.bbox(self.sel) != "" and \
                     (t.parent(self.sel) == "" or t.item(t.parent(self.sel), "open")):
@@ -6365,6 +6891,11 @@ def run_gui(path=None):
                 t.see(self.sel)
             elif t.selection():
                 t.selection_remove(*t.selection())
+            nav_ = getattr(self, "list_nav", None)
+            if nav_ is not None:   # 選んでいるセルの枠
+                if nav_.cur and not t.exists(nav_.cur[0]):
+                    nav_.cur = None
+                self.root.after_idle(nav_.show)
             self.refresh_categories_ui()
             self.refresh_quick_editor()
             left = sum(1 for n in items if n.get("status") != "done")
@@ -6427,8 +6958,14 @@ def run_gui(path=None):
                 return "break"
             if iid == "__newtask__":   # いちばん下の行：ここに直接入力して追加
                 self._ldrag = None
+                self.list_nav.set(iid, "label", see=False)
                 self.root.after(10, self.begin_new_task)
                 return "break"
+            if iid in self.mm.nodes and col:   # クリックしたセルを選ぶ（エクセルと同じ）
+                try:
+                    self.list_nav.set(iid, LIST_COLS[int(col.lstrip("#")) - 1], see=False)
+                except (ValueError, IndexError):
+                    pass
             if iid and col in (LCOL["quad"], LCOL["imp"], LCOL["need"], LCOL["urg"]) and iid in self.mm.nodes:   # 指標 → 入力
                 self.select(iid)
                 self._ldrag = None
@@ -15039,7 +15576,7 @@ def run_gui(path=None):
             try:
                 if not self.path:
                     return
-                for key, lp, cv in (("shopping", SHOP_PATH, ShoppingWin.upgrade), ("memo", MEMO_PATH, None),
+                for key, lp, cv in (("shopping", SHOP_PATH, shopping_upgrade), ("memo", MEMO_PATH, None),
                                     ("lecture_conf", LECTURE_PATH, None), ("shift_conf", SHIFT_CONF, None)):
                     if os.path.exists(lp):
                         self.shared_get(key, lp, conv=cv)
@@ -17636,6 +18173,156 @@ def run_gui(path=None):
             THEME["exempt"] = tuple(x for x in THEME["exempt"] if x != str(self.win))
             self.win.destroy()
 
+    class GridNav:
+        """一覧（Treeview）をエクセルのように操作する（2026-11-08）。
+        選んだセルに太い枠。矢印・Tab・Shift+Tab・Enter で移動。文字を打つとそのセルに入力（F2・ダブルクリックは今の文字のまま入力）。
+        入力を確定しても並べ替えない（並べ替えは各画面の「並べ替え」ボタンで）。
+        cols：左からの欄のキー、can_edit(iid, key)：文字を入力できるか、begin(iid, key, init)：入力欄を出す、
+        activate(iid, key, ch)：入力欄以外の操作（☐・★・一覧から選ぶ など。した なら True）、is_row(iid)：カーソルを置ける行か"""
+        def __init__(self, tree, cols, can_edit, begin, activate=None, is_row=None, color="#1c7ed6"):
+            self.t, self.cols = tree, list(cols)
+            self.can_edit, self.begin = can_edit, begin
+            self.activate = activate or (lambda iid, key, ch: False)
+            self.is_row = is_row or (lambda iid: True)
+            self.cur = None
+            self.box = [tk.Frame(tree, bg=color, height=2, width=2) for _ in range(4)]
+            for seq, d in (("<Up>", (-1, 0)), ("<Down>", (1, 0)), ("<Left>", (0, -1)), ("<Right>", (0, 1))):
+                tree.bind(seq, lambda ev, d=d: self._key_move(*d))
+            tree.bind("<Tab>", lambda ev: self._key_move(0, 1, wrap=True))
+            for seq in ("<Shift-Tab>", "<ISO_Left_Tab>"):
+                tree.bind(seq, lambda ev: self._key_move(0, -1, wrap=True))
+            for seq in ("<Return>", "<KP_Enter>"):
+                tree.bind(seq, self._on_return)
+            tree.bind("<F2>", lambda ev: self.edit(keep=True))
+            tree.bind("<Key>", self._on_key, add="+")
+            tree.bind("<Configure>", lambda ev: tree.after_idle(self.show), add="+")
+            for opt in ("yscrollcommand", "xscrollcommand"):   # スクロールしたら枠も動かす
+                orig = tree.tk.splitlist(tree.cget(opt)) if tree.cget(opt) else ()
+                if orig:
+                    def wrapped(*a, _o=orig):
+                        tree.tk.call(*_o, *a)
+                        tree.after_idle(self.show)
+                    tree.configure(**{opt: tree.register(wrapped)})
+
+        def rows(self):
+            """カーソルを置ける行（見えているもの。開いたまとまりの中も）の並び"""
+            out = []
+
+            def walk(parent):
+                for i in self.t.get_children(parent):
+                    if self.is_row(i):
+                        out.append(i)
+                    if self.t.get_children(i) and self.t.item(i, "open"):
+                        walk(i)
+            walk("")
+            return out
+
+        def set(self, iid, key, see=True):
+            if not iid or not self.t.exists(iid) or key not in self.cols:
+                self.cur = None
+                self.show()
+                return
+            self.cur = (iid, key)
+            if see:
+                self.t.see(iid)
+            self.t.focus(iid)
+            if iid not in self.t.selection():
+                self.t.selection_set(iid)
+            self.t.after_idle(self.show)
+
+        def show(self):
+            for f in self.box:
+                f.place_forget()
+            if not self.cur or not self.t.exists(self.cur[0]):
+                return
+            try:
+                bb = self.t.bbox(self.cur[0], "#" + str(self.cols.index(self.cur[1]) + 1))
+            except tk.TclError:
+                bb = None
+            if not bb:
+                return
+            x, y, w, h = bb
+            for f, (fx, fy, fw, fh) in zip(self.box, ((x, y, w, 2), (x, y + h - 2, w, 2), (x, y, 2, h), (x + w - 2, y, 2, h))):
+                f.place(x=fx, y=fy, width=fw, height=fh)
+
+        def step(self, dr, dc, wrap=False):
+            """今のセルから dr 行・dc 欄 動かす（Tab は行の端で次の行へ）"""
+            rows = self.rows()
+            if not rows:
+                return
+            if not self.cur or self.cur[0] not in rows:
+                self.set(rows[0], self.cur[1] if self.cur else self.cols[0])
+                return
+            r, c = rows.index(self.cur[0]), self.cols.index(self.cur[1])
+            c += dc
+            if wrap and c >= len(self.cols):
+                c, r = 0, r + 1
+            elif wrap and c < 0:
+                c, r = len(self.cols) - 1, r - 1
+            r = max(0, min(len(rows) - 1, r + dr))
+            c = max(0, min(len(self.cols) - 1, c))
+            self.set(rows[r], self.cols[c])
+
+        def _key_move(self, dr, dc, wrap=False):
+            self.step(dr, dc, wrap)
+            return "break"
+
+        def _on_return(self, ev):
+            if self.cur and self.activate(self.cur[0], self.cur[1], "\r"):   # 新しい行などは Enter で入力
+                return "break"
+            self.step(1, 0)
+            return "break"
+
+        def edit(self, keep=True, init=None):
+            if self.cur and self.can_edit(*self.cur):
+                self.begin(self.cur[0], self.cur[1], None if keep else init)
+            elif self.cur:
+                self.activate(self.cur[0], self.cur[1], init or "")
+            return "break"
+
+        def _on_key(self, ev):
+            ch = getattr(ev, "char", "")
+            if not self.cur or not ch or not ch.isprintable() or ev.state & 0x0004 or \
+                    (sys.platform == "darwin" and ev.state & 0x0008):
+                return None
+            if self.activate(self.cur[0], self.cur[1], ch):
+                return "break"
+            if self.can_edit(*self.cur):   # 文字を打つ：今の中身を置きかえて入力（エクセルと同じ）
+                self.begin(self.cur[0], self.cur[1], ch)
+                return "break"
+            return None
+
+        def entry_keys(self, e, commit):
+            """セルの入力欄：Enter＝確定して下へ、Tab＝右へ、Shift+Tab＝左へ、↑↓＝上下へ、
+            ←→＝文字の端なら隣のセルへ。commit(dr, dc, wrap) は確定して移動する処理"""
+            def lr(ev, d):
+                try:
+                    pos, n = e.index("insert"), len(e.get())
+                    has_sel = e.selection_present()
+                except tk.TclError:
+                    return None
+                if has_sel or (d < 0 and pos > 0) or (d > 0 and pos < n):
+                    return None   # 文字の中を動く
+                commit(0, d, False)
+                return "break"
+            e.bind("<Return>", lambda ev: (commit(1, 0, False), "break")[1])
+            e.bind("<KP_Enter>", lambda ev: (commit(1, 0, False), "break")[1])
+            e.bind("<Tab>", lambda ev: (commit(0, 1, True), "break")[1])
+            for seq in ("<Shift-Tab>", "<ISO_Left_Tab>"):
+                e.bind(seq, lambda ev: (commit(0, -1, True), "break")[1])
+            e.bind("<Up>", lambda ev: (commit(-1, 0, False), "break")[1])
+            e.bind("<Down>", lambda ev: (commit(1, 0, False), "break")[1])
+            e.bind("<Left>", lambda ev: lr(ev, -1))
+            e.bind("<Right>", lambda ev: lr(ev, 1))
+
+        @staticmethod
+        def start_text(e, v, init):
+            """入力欄の最初の文字：打った文字で置きかえ（init）／今の文字のまま末尾に（init=None）"""
+            if init is not None:
+                v.set(init)
+            e.icursor("end")
+            e.selection_clear() if hasattr(e, "selection_clear") else None
+
     class GroceryWin:  # noqa
         """買い物リスト（日用品・食品）：リストに直接書き込み、☐で購入。購入回数（週・月・年）と価格の小計・総計を表示。
         定番（いつも買う物）とはドラッグ＆ドロップ／Ctrl+→・Ctrl+← でやりとり。データはマップのデータファイルに保存"""
@@ -17646,26 +18333,7 @@ def run_gui(path=None):
 
         def __init__(self, app):
             self.app = app
-            d = self.data = app.shared_get("groceries")
-            d.setdefault("staples", [])
-            d.setdefault("items", [])
-            d.setdefault("history", [])
-            for x in d["items"]:   # 以前の形式（売り場・数量・メモ・done）を読みかえる
-                if "done" in x:
-                    x["bought"] = bool(x.pop("done"))
-                for k in ("sec", "qty", "memo"):
-                    x.pop(k, None)
-                x.setdefault("need", 2)
-                x.setdefault("price", 0)
-            for x in d["staples"]:
-                for k in ("sec", "qty", "last", "every"):
-                    x.pop(k, None)
-                x.setdefault("need", 2)
-                x.setdefault("price", 0)
-            d.pop("sections", None)
-            for x in d["items"]:
-                x.setdefault("qty", 1)
-            d["layout"] = {"v": GROCERY_LAYOUT_VER, "columns": [[k, t.replace(" ▾", ""), w] for k, t, w in GROCERY_COLUMNS]}
+            d = self.data = groceries_normalize(app.shared_get("groceries"))   # 個数などの入力は消さない
             fam = app.fam_base
             self.font = (fam, 11)
             self._cell = None
@@ -17708,6 +18376,7 @@ def run_gui(path=None):
             self.lbl_cnt.pack(fill="x")
             bf = ttk.Frame(lf)
             bf.pack(side="bottom", fill="x", pady=(6, 0))
+            ttk.Button(bf, text="⇅ 並べ替える", command=self.sort_items).pack(side="left", padx=(0, 6))
             ttk.Button(bf, text="購入済みを片付ける", command=self.clear_done).pack(side="left")
             ttk.Button(bf, text="テキストでコピー", command=self.copy_text).pack(side="left", padx=6)
             ttk.Button(bf, text="CSV出力…", command=self.export_csv).pack(side="left", padx=(0, 6))
@@ -17716,14 +18385,16 @@ def run_gui(path=None):
             ttk.Button(bf, text="削除", command=self.delete_sel).pack(side="right")
             sb.pack(side="right", fill="y")
             t.pack(fill="both", expand=True, pady=(4, 0))
-            ttk.Label(lf, text="品名・価格はクリックして入力（Enter で確定・Tab で次の欄）／必要度はクリックして一覧から（高・中・低）／☐ で購入（回数を記録）",
-                      foreground="#868e96").pack(side="bottom", anchor="w")
+            ttk.Label(lf, text="エクセルと同じ操作：セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／Enter・Tab・矢印で移動／"
+                              "入力・購入しても並びは変わりません（「⇅ 並べ替える」で並べ替え）／必要度は 1・2・3 のキーかクリック／☐ はクリックかスペースで購入",
+                      foreground="#868e96", wraplength=640, justify="left").pack(side="bottom", anchor="w")
             t.bind("<Button-1>", self.on_click)
             t.bind("<B1-Motion>", lambda ev: self._drag_motion(ev))
             t.bind("<ButtonRelease-1>", lambda ev: self._drag_release(ev))
             t.bind("<Delete>", lambda ev: self.delete_sel())
-            t.bind("<space>", lambda ev: (self.toggle(self._sel_items()), "break")[1])
-            t.bind("<Return>", lambda ev: (self.begin_cell(t.focus() or self.NEW, "name"), "break")[1])
+            t.bind("<Double-Button-1>", self._on_double)
+            self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
+                               lambda i: i == self.NEW or self.item(i) is not None)
             for seq in ("<Control-Right>", "<Command-Right>") if sys.platform == "darwin" else ("<Control-Right>",):
                 t.bind(seq, lambda ev: (self.to_staples(self._sel_items()), "break")[1])
             # 右：定番
@@ -17834,8 +18505,7 @@ def run_gui(path=None):
             sel = set(t.selection())
             t.delete(*t.get_children())
             items = self.data["items"]
-            order = sorted(items, key=lambda x: (bool(x.get("bought")), int(x.get("need") or 2), x.get("added", "")))
-            for x in order:
+            for x in items:   # 並びはデータの順のまま（並べ替えは「⇅ 並べ替える」ボタンで。スマホのアプリも同じ）
                 wk, mo, yr = self.counts(x.get("name"))
                 tags = ("done",) if x.get("bought") else ("n1",) if int(x.get("need") or 2) == 1 else ()
                 v_ = {"chk": "☑" if x.get("bought") else "☐", "name": x.get("name", ""), "qty": self.qty(x),
@@ -17852,6 +18522,10 @@ def run_gui(path=None):
             for i in sel:
                 if t.exists(i):
                     t.selection_add(i)
+            if getattr(self, "nav", None) is not None:   # 選んでいるセルの枠
+                if self.nav.cur and not t.exists(self.nav.cur[0]):
+                    self.nav.cur = None
+                self.nav.show()
             todo = [x for x in items if not x.get("bought")]
             done = [x for x in items if x.get("bought")]
             ps = lambda xs: sum(self.sub(x) for x in xs)
@@ -17896,11 +18570,14 @@ def run_gui(path=None):
             if ev.state & (0x0001 | 0x0004):
                 return None   # Shift・Ctrl＋クリックは複数選択
             if iid == self.NEW:
+                self.nav.set(iid, "name", see=False)
                 self.win.after(10, lambda: self.begin_cell(self.NEW, "name"))
                 return "break"
             x = self.item(iid)
             if not x:
                 return None
+            t.focus_set()
+            self.nav.set(iid, key, see=False)   # クリックしたセルを選ぶ（エクセルと同じ）
             if key == "chk":
                 self.toggle([iid])
                 return "break"
@@ -17908,15 +18585,52 @@ def run_gui(path=None):
                 t.selection_set(iid)
                 self.win.after(10, lambda: self.need_menu(iid))
                 return "break"
-            if key in ("name", "price", "qty") and iid in t.selection() and len(t.selection()) == 1:
-                self.win.after(10, lambda: self.begin_cell(iid, key))   # 選んである行をもう一度クリック → 入力
-                return "break"
-            t.selection_set(iid)
-            t.focus(iid)
-            if key in ("name", "price", "qty"):
-                self.win.after(10, lambda: self.begin_cell(iid, key))
+            if key in ("name", "price", "qty"):   # 文字の欄：選ぶだけ（打つと入力・ダブルクリックで今の文字のまま入力）
                 return "break"
             return None
+
+        # ---- エクセルのような操作 ----
+        def _can_edit(self, iid, key):
+            if iid == self.NEW:
+                return key == "name"
+            return key in ("name", "qty", "price") and self.item(iid) is not None
+
+        def _activate(self, iid, key, ch):
+            if iid == self.NEW:
+                if ch == "\r":
+                    self.begin_cell(self.NEW, "name")
+                    return True
+                return False
+            if not self.item(iid):
+                return False
+            if key == "chk" and ch in (" ", "\r"):
+                self.toggle([iid])
+                self.nav.set(iid, key)
+                return True
+            if key == "need" and ch in ("1", "2", "3"):   # 1＝高・2＝中・3＝低
+                self._set_need(iid, int(ch))
+                self.nav.set(iid, key)
+                return True
+            if key == "need" and ch in (" ", "\r"):
+                self.need_menu(iid)
+                return True
+            return False
+
+        def _on_double(self, ev):
+            t = self.tree
+            iid, key = t.identify_row(ev.y), self._col(ev)
+            if iid and key and self._can_edit(iid, key):
+                self.nav.set(iid, key, see=False)
+                self.begin_cell(iid, key)
+                return "break"
+            return None
+
+        def sort_items(self):
+            """「⇅ 並べ替える」：未購入 → 購入済み、その中は必要度（高→低）→ 追加した順。データの順も変える（スマホと同じ並び）"""
+            self.end_cell(True)
+            self.data["items"].sort(key=lambda x: (bool(x.get("bought")), int(x.get("need") or 2), x.get("added", "")))
+            self.save()
+            self.refresh()
 
         def need_menu(self, iid):
             """必要度：その場に 高・中・低 の一覧を出して選ぶ（ふだんは中）"""
@@ -17945,8 +18659,9 @@ def run_gui(path=None):
                 if self.tree.exists(iid):
                     self.tree.selection_set(iid)
 
-        def begin_cell(self, iid, key):
-            """セルの上に入力欄を重ねて、その場で書き込む（リストと同じ文字の大きさ）"""
+        def begin_cell(self, iid, key, init=None):
+            """セルの上に入力欄を重ねて、その場で書き込む（リストと同じ文字の大きさ）。
+            init：打った文字（今の中身を置きかえる）／None：今の文字のまま（F2・ダブルクリック）"""
             self.end_cell(True)
             t = self.tree
             if not t.exists(iid):
@@ -17964,15 +18679,15 @@ def run_gui(path=None):
                          justify="right" if key in ("price", "qty") else "left")
             e.place(x=bb[0], y=bb[1], width=bb[2], height=bb[3])   # セルと同じ大きさ・同じ文字（大きくしない）
             e.focus_set()
-            e.select_range(0, "end")
+            GridNav.start_text(e, v, init)
             self._cell = (iid, key, v, e)
-            e.bind("<Return>", lambda ev: (self.end_cell(True, "enter"), "break")[1])
-            e.bind("<KP_Enter>", lambda ev: (self.end_cell(True, "enter"), "break")[1])
-            e.bind("<Tab>", lambda ev: (self.end_cell(True, "tab"), "break")[1])
-            e.bind("<Escape>", lambda ev: (self.end_cell(False), "break")[1])
+            self.nav.set(iid, key, see=False)
+            self.nav.entry_keys(e, lambda dr, dc, wrap: self.end_cell(True, (dr, dc, wrap)))
+            e.bind("<Escape>", lambda ev: (self.end_cell(False), self.tree.focus_set(), "break")[2])
             e.bind("<FocusOut>", lambda ev: self.win.after(1, lambda: self._cell and self._cell[3] is e and self.end_cell(True)))
 
         def end_cell(self, commit=True, nxt=None):
+            """入力を確定（または取り消し）。nxt＝(行, 欄, 折り返し)：確定してそのセルへ移る。並びは変えない"""
             cell, self._cell = self._cell, None
             if not cell:
                 return
@@ -17999,6 +18714,10 @@ def run_gui(path=None):
                     return
             if iid == self.NEW:
                 if key != "name" or not val:
+                    if nxt:
+                        self.nav.set(self.NEW, "name")
+                        self.nav.step(*nxt)
+                        self.tree.focus_set()
                     return
                 st_ = next((x for x in self.data["staples"] if x.get("name") == val), None)   # 定番にあれば価格・必要度も
                 rec = {"id": uuid.uuid4().hex[:8], "name": val, "need": int((st_ or {}).get("need") or 2), "qty": 1,
@@ -18011,14 +18730,12 @@ def run_gui(path=None):
                     return
                 x[key] = val
             self.save()
-            self.refresh()
+            self.refresh()   # 並びは変えない
             if self.tree.exists(iid):
-                self.tree.selection_set(iid)
-                self.tree.focus(iid)
-            if nxt == "enter":   # Enter：品名 → 価格 → 次の新しい品
-                self.win.after(10, lambda: self.begin_cell(iid, "price") if key == "name" else self.begin_cell(self.NEW, "name"))
-            elif nxt == "tab":   # Tab：品名 → 個数 → 価格
-                self.win.after(10, lambda: self.begin_cell(iid, {"name": "qty", "qty": "price"}.get(key, "name")))
+                self.nav.set(iid, key)
+            if nxt:   # Enter・Tab・矢印：確定して隣のセルへ（エクセルと同じ）
+                self.nav.step(*nxt)
+                self.tree.focus_set()
 
         def toggle(self, ids):
             """☐ で購入済み（購入回数を記録）／もう一度で取り消し"""
@@ -18183,9 +18900,8 @@ def run_gui(path=None):
         QUAD_AXIS = {"invest": "第1象限：人生価値 高 × 生活必要 高", "need": "第2象限：人生価値 低 × 生活必要 高",
                      "waste": "第3象限：人生価値 低 × 生活必要 低", "joy": "第4象限：人生価値 高 × 生活必要 低"}
         # 品の状態（2026-11-08。以前の 購入・購入予定・今は買わない のチェックの代わり）
-        STATUSES = (("wants", "Wants", "欲しい・検討中", "#1098ad"), ("buy", "Buy", "買う", "#2f9e44"),
-                    ("hold", "Hold", "保留（今は買わない）", "#f08c00"), ("clutter", "Clutter", "買わない・無駄", "#e03131"),
-                    ("sold", "Sold", "売った・手放した", "#7048e8"))
+        STATUSES = (("wants", "Wants", "", "#1098ad"), ("buy", "Buy", "", "#2f9e44"), ("hold", "Hold", "", "#f08c00"),
+                    ("clutter", "Clutter", "", "#e03131"), ("sold", "Sold", "", "#7048e8"))   # 名前の後に日本語は付けない
         SNAME = {k: n for k, n, _d, _c in STATUSES}
         SCOLOR = {k: c for k, _n, _d, c in STATUSES}
         # 売却価格 ÷ 購入価格 による分類（境目以上ならその分類）
@@ -18223,58 +18939,28 @@ def run_gui(path=None):
             self._build_list()
             self._build_analysis()
             self.refresh()
+            items_ = self.data.get("items") or []
+            if len(items_) >= 3 and not any(shop_informed(x) for x in items_):   # 入力が消えているようなら復旧をすすめる
+                self.win.after(400, self._offer_recover)
 
         # ---- データ ----
-        @staticmethod
-        def _from_old(lv):
-            """以前の3段階（1＝高い）→ 5段階（5＝高い）"""
-            return {"1": 5, "2": 3, "3": 1}.get(str(lv), 3)
-
         def load(self):
-            d = self.app.shared_get("shopping", SHOP_PATH, conv=ShoppingWin.upgrade)   # マップのデータファイルに保存（どのPCでも同じ）
-            return ShoppingWin.upgrade(d)
+            d = self.app.shared_get("shopping", SHOP_PATH, conv=shopping_upgrade)   # マップのデータファイルに保存（どのPCでも同じ）
+            return shopping_upgrade(d)
 
-        @staticmethod
-        def upgrade(d):
-            """以前の形式を今の形式（v3）に読みかえる"""
-            d.setdefault("categories", ["食品", "日用品", "衣類", "趣味", "仕事・勉強", "交際", "その他"])
-            items = d.get("items", [])
-            if d.get("v") not in (2, 3):   # 以前の形式（必要度・重要度・緊急度、購入済みは別の表）を読みかえる
-                new = []
-                for x in items:
-                    new.append({"id": x.get("id") or uuid.uuid4().hex[:8], "name": x.get("name", ""),
-                                "cat": x.get("cat", ""), "life": ShoppingWin._from_old(x.get("need")),
-                                "value": ShoppingWin._from_old(x.get("imp")), "price": int(x.get("price") or 0),
-                                "daily": bool(x.get("daily")), "added": x.get("added") or datetime.date.today().isoformat(),
-                                "bought": ""})
-                for b in d.get("bought", []):
-                    new.append({"id": b.get("id") or uuid.uuid4().hex[:8], "name": b.get("name", ""),
-                                "cat": b.get("cat", ""), "life": ShoppingWin._from_old(b.get("need")),
-                                "value": ShoppingWin._from_old(b.get("imp")), "price": int(b.get("price") or 0),
-                                "daily": bool(b.get("daily")), "added": b.get("added") or b.get("date") or "",
-                                "bought": b.get("date") or ""})
-                cats_ = d["categories"]
-                d.clear()
-                d.update({"v": 2, "categories": cats_, "items": new})
-            if d.get("v") == 2:   # 5段階 → 6段階（1→1, 2→2, 3→4, 4→5, 5→6）
-                for x in d.get("items", []):
-                    for k in ("life", "value"):
-                        x[k] = {1: 1, 2: 2, 3: 4, 4: 5, 5: 6}.get(int(x.get(k) or 3), 4)
-                d["v"] = 3
-            if d.get("v") == 3:   # 状態（Wants・Buy・Hold・Clutter・Sold）へ：購入済み・購入予定→Buy、今は買わない→Hold、ほか→Wants
-                for x in d.get("items", []):
-                    if x.get("status") not in ShoppingWin.SNAME:
-                        st = "buy" if (x.get("bought") or x.get("plan")) else "hold" if x.get("skip") else "wants"
-                        x["status"] = st
-                        x["status_date"] = (x.get("bought") if st == "buy" and x.get("bought") else x.get("added")) or \
-                            datetime.date.today().isoformat()
-                        x.setdefault("status_log", [{"s": st, "d": x["status_date"]}])
-                d["v"] = 4   # 以前の項目（bought・plan・skip）は消さずに残す
-                d.pop("order", None)   # 状態ごとのまとまりに並べ直す（開いたときに1回）
-                d.pop("groups", None)
-            d.setdefault("items", [])
-            d.setdefault("hold_limits", {})   # カテゴリ → Hold の上限数
-            return d
+        upgrade = staticmethod(shopping_upgrade)   # 読み替えは関数 shopping_upgrade（自動テストあり）
+
+        def _offer_recover(self):
+            if messagebox.askyesno(self.TITLE, "IN/OUT_Navi のすべての品で、状態・★・売却価格などの入力が消えているようです\n"
+                                               "（以前の版の不具合が原因です。申し訳ありません）。\n\n"
+                                               "復元ポイント・バックアップから、消えた入力を補いますか？\n"
+                                               "（入力のいちばん多い時点を選んだ画面を開きます）", parent=self.win):
+                self.recover()
+
+        def recover(self):
+            """データの復旧：復元ポイントから IN/OUT_Navi の消えた入力を補う（いちばん入力の多い時点を選んでおく）"""
+            self.save()
+            self.app.restore_dialog(focus="fill")
 
         def save(self):
             """マップのデータファイルに保存（自動保存とバックアップの対象）"""
@@ -18324,18 +19010,31 @@ def run_gui(path=None):
             return x.get("status_date", "") if ShoppingWin.status(x) == "buy" else ""
 
         @staticmethod
-        def hold_days(x, today=None):
-            """Hold にしていた日数の合計（今も Hold なら今日まで）"""
+        def durations(x, today=None):
+            """状態ごとの Duration（その状態にあった日数の合計）。今の状態は今日まで加算。
+            Wants → Buy にしても Wants の日数は残り、また Wants に戻るとそこから加算される"""
             today = today or datetime.date.today()
             log = sorted((lg for lg in x.get("status_log") or [] if _date(lg.get("d"))), key=lambda lg: lg["d"])
-            tot = 0
+            if not log:
+                d0 = _date(x.get("status_date")) or _date(x.get("added"))
+                log = [{"s": ShoppingWin.status(x), "d": d0.isoformat()}] if d0 else []
+            out = {}
             for i, lg in enumerate(log):
-                if lg.get("s") != "hold":
-                    continue
                 d0 = _date(lg["d"])
                 d1 = _date(log[i + 1]["d"]) if i + 1 < len(log) else today
-                tot += max(0, (d1 - d0).days)
-            return tot
+                out[lg.get("s")] = out.get(lg.get("s"), 0) + max(0, (d1 - d0).days)
+            return out
+
+        @staticmethod
+        def duration(x, today=None):
+            """今の状態の Duration（日）"""
+            return ShoppingWin.durations(x, today).get(ShoppingWin.status(x), 0)
+
+        @staticmethod
+        def transitions(x):
+            """状態の変化：[(前の状態, 次の状態, 日付)]（古い順）"""
+            log = sorted((lg for lg in x.get("status_log") or [] if _date(lg.get("d"))), key=lambda lg: lg["d"])
+            return [(log[i - 1].get("s"), log[i].get("s"), log[i]["d"]) for i in range(1, len(log))]
 
         @staticmethod
         def ratio(x):
@@ -18392,17 +19091,18 @@ def run_gui(path=None):
             return len(xs)
 
         # ---- 購入分析 ----
-        COLS = (("quad", "分類", 110), ("status", "状態", 78), ("name", "品名", 140), ("cat", "カテゴリ", 100),
+        COLS = (("del", "", 26), ("quad", "分類", 110), ("status", "状態", 78), ("name", "品名", 140), ("cat", "カテゴリ", 100),
                 ("gap", "", 12), ("life", "生活必要度", 118), ("value", "人生価値度", 118), ("price", "価格", 80),
-                ("sell", "売却価格", 80), ("diff", "購入−売却", 84), ("ratio", "売却／購入", 104), ("hold", "Hold期間", 72),
+                ("sell", "売却価格", 80), ("diff", "購入−売却", 84), ("ratio", "売却／購入", 104), ("dur", "Duration", 76),
                 ("daily", "毎回", 52), ("added", "追加日", 66), ("sdate", "変更日", 66))   # 分類をいちばん左に
         NEW = "__new__"   # いちばん下の「＋ 新しい品」の行
-        SORT_KEYS = ("quad", "status", "name", "cat", "life", "value", "price", "sell", "diff", "ratio", "hold", "daily",
+        SORT_KEYS = ("quad", "status", "name", "cat", "life", "value", "price", "sell", "diff", "ratio", "dur", "daily",
                      "added", "sdate")
         SORT_NAMES = {"quad": "分類", "status": "状態", "name": "品名", "cat": "カテゴリ", "life": "生活必要度",
                       "value": "人生価値度", "price": "価格", "sell": "売却価格", "diff": "購入−売却", "ratio": "売却／購入",
-                      "hold": "Hold期間", "daily": "毎回", "added": "追加日", "sdate": "変更日"}
-        NOSORT = ("gap",)
+                      "dur": "Duration", "daily": "毎回", "added": "追加日", "sdate": "変更日"}
+        NOSORT = ("gap", "del")
+        TEXT_COLS = ("name", "price", "sell")   # 文字を入力する欄（ほかは押して選ぶ・数字キーで決める）
 
         def _build_list(self):
             f = self.t_list
@@ -18429,6 +19129,7 @@ def run_gui(path=None):
             self.cb_lmon.pack(side="left", padx=4)
             self.cb_lmon.bind("<<ComboboxSelected>>", lambda ev: self.refresh())
             ttk.Button(top, text="カテゴリの編集…", command=self.edit_categories).pack(side="left", padx=(12, 0))
+            ttk.Button(top, text="データの復旧…", command=self.recover).pack(side="left", padx=(6, 0))
             self.lbl_total = ttk.Label(top, font=(self.app.fam_base, 10, "bold"))
             self.lbl_total.pack(side="right")
             # 並べ替え：第1〜第3（例：カテゴリ → 生活必要度 → 価格）
@@ -18449,18 +19150,22 @@ def run_gui(path=None):
                 ck.bind("<<ComboboxSelected>>", lambda ev: self._sort_from_bar())
                 cd.bind("<<ComboboxSelected>>", lambda ev: self._sort_from_bar())
                 self._sort_vars.append((vk, vd))
+            ttk.Button(sb_, text="⇅ 並べ替える", command=lambda: self.set_sorts(self.sorts)).pack(side="left", padx=(10, 0))
             ttk.Button(sb_, text="既定に戻す", command=lambda: self.set_sorts([("quad", False), ("life", True),
-                                                                           ("value", True)])).pack(side="left", padx=(10, 0))
-            ttk.Label(f, text="リストに直接書き込みます：品名・カテゴリ・価格・売却価格はクリックして入力（Enter で確定・Tab で次の欄）／"
-                              "★ はクリックした位置の段階に（1〜6）／ 状態の欄をクリックで状態を選ぶ／ いちばん下の行で新しい品を追加",
+                                                                           ("value", True)])).pack(side="left", padx=(6, 0))
+            ttk.Label(f, text="エクセルと同じ操作：セルを選んで文字を打つと入力（F2・ダブルクリックは今の文字のまま）／ Enter・Tab・矢印でセルを移動／"
+                              "入力しても並びは変わりません（「並べ替える」ボタンで並べ替え）／ ★は1〜6のキーかクリック／ 状態は W・B・H・C・S のキー／"
+                              " ✕・Delete で削除（元に戻す：Ctrl+Z）／ いちばん下の行で新しい品を追加",
                       foreground="#868e96", wraplength=700, justify="left").pack(side="bottom", anchor="w", pady=(4, 0))
             tf = ttk.Frame(f)
             tf.pack(fill="both", expand=True, pady=(6, 0))
             t = self.tree = ttk.Treeview(tf, columns=[c[0] for c in self.COLS], show="headings", selectmode="extended")
             for k, txt, wd in self.COLS:
                 t.heading(k, text=txt)   # 並べ替えは見出しの ▲（昇順）▼（降順）をクリック（on_click で判定）
-                t.column(k, width=wd, anchor="w" if k in ("name", "cat") else "center", stretch=k == "name")
+                t.column(k, width=wd, minwidth=wd if k == "del" else 20, anchor="w" if k in ("name", "cat") else "center",
+                         stretch=k == "name")
             t.tag_configure("new", foreground="#1c7ed6")
+            t.tag_configure("delcol", foreground="#adb5bd")
             t.tag_configure("hl", background="#fff3bf")
             t.tag_configure("st_hold", foreground="#adb5bd")      # Hold：うすい灰色
             t.tag_configure("st_clutter", foreground="#c92a2a")   # Clutter：赤
@@ -18480,6 +19185,8 @@ def run_gui(path=None):
             t.bind("<<TreeviewSelect>>", self._on_list_select)   # 選んだ品を分析マップで強調
             t.bind("<FocusOut>", lambda ev: self.win.after(60, self._tree_left), add="+")
             t.bind("<Delete>", lambda ev: self.delete_sel())
+            t.bind("<Double-Button-1>", self._on_double)            # ダブルクリック：今の文字のまま入力
+            t.bind("<Button-3>" if sys.platform != "darwin" else "<Button-2>", self._row_menu)   # 右クリック：削除・状態
             t.bind("<B1-Motion>", self._drag_motion, add="+")       # 状態の欄から札へドラッグ
             t.bind("<ButtonRelease-1>", self._drag_release, add="+")
             t.bind("<Return>", lambda ev: self.begin_cell(t.focus(), "name") if t.focus() else None)
@@ -18503,13 +19210,18 @@ def run_gui(path=None):
             mb = ttk.Menubutton(bf, text="状態を変える ▾")
             mm_ = tk.Menu(mb, tearoff=0)
             for k_, n_, d_, _c in self.STATUSES:
-                mm_.add_command(label=f"{n_}（{d_}）",
+                mm_.add_command(label=n_,
                                 command=lambda k_=k_: self.set_status([i for i in t.selection() if i != self.NEW], k_))
             mb["menu"] = mm_
             mb.pack(side="right")
+            ttk.Button(bf, text="元に戻す", command=self.undo_delete).pack(side="right", padx=(0, 6))
+            self.win.bind(f"<{MOD}-z>", lambda ev: self.undo_delete() if not self._cell else None)
             self.lbl_msg = ttk.Label(bf, foreground="#2b8a3e")
             self.lbl_msg.pack(side="left", padx=8)
             self._cell = None
+            self._undo_del = []   # 削除を元に戻す用：[(位置, 品)]
+            self.nav = GridNav(t, [c[0] for c in self.COLS], self._can_edit, self.begin_cell, self._activate,
+                               lambda i: i == self.NEW or self.item(i) is not None)
 
         # ---- リスト上で直接入力 ----
         def item(self, iid):
@@ -18581,8 +19293,8 @@ def run_gui(path=None):
                 if k == "ratio":
                     r_ = self.ratio(x)
                     return -1.0 if r_ is None else r_
-                if k == "hold":
-                    return self.hold_days(x)
+                if k == "dur":
+                    return self.duration(x)
                 if k == "sdate":
                     return x.get("status_date") or ""
                 if k == "quad":
@@ -18636,6 +19348,11 @@ def run_gui(path=None):
                 return None
             if iid.startswith("__") and iid != self.NEW:   # 小計・総計の行は操作しない
                 return "break"
+            t.focus_set()
+            self.nav.set(iid, key, see=False)   # クリックしたセルを選ぶ（エクセルと同じ）
+            if key == "del" and iid != self.NEW:   # ✕：その品を削除（確認なし。元に戻せる）
+                self.delete_items([iid])
+                return "break"
             if iid != self.NEW and self._freeze_row and iid != self._freeze_row:
                 self.unfreeze()   # 別の品をクリック：前の品の入力は終わりとして並べ直す
                 if not t.exists(iid):
@@ -18682,11 +19399,122 @@ def run_gui(path=None):
                 t.selection_set(iid)
                 self.win.after(10, lambda: self.cat_menu(iid))
                 return "break"
-            if key in ("name", "price", "sell"):
-                t.selection_set(iid)
-                self.win.after(10, lambda: self.begin_cell(iid, key))
+            if key in self.TEXT_COLS:   # 文字の欄：選ぶだけ（打つと入力・ダブルクリックで今の文字のまま入力）
                 return "break"
             return None
+
+        # ---- エクセルのような操作 ----
+        def _can_edit(self, iid, key):
+            if iid == self.NEW:
+                return key == "name"
+            return key in self.TEXT_COLS and self.item(iid) is not None
+
+        def _activate(self, iid, key, ch):
+            """文字の欄以外：Enter・スペース・決まったキーで操作（した なら True）"""
+            if iid == self.NEW:
+                if ch == "\r":
+                    self.begin_cell(self.NEW, "name")
+                    return True
+                return False
+            it = self.item(iid)
+            if not it:
+                return False
+            if key in ("life", "value") and ch in "123456" and ch:   # 数字キーでその段階に
+                it[key] = int(ch)
+                self.save()
+                self.refresh()
+                self.nav.set(iid, key)
+                return True
+            if key == "status":
+                hot = {"w": "wants", "b": "buy", "h": "hold", "c": "clutter", "s": "sold"}.get(ch.lower())
+                if hot:
+                    self.set_status([iid], hot)
+                    self.nav.set(iid, key)
+                    return True
+                if ch in ("\r", " "):
+                    bb = self.tree.bbox(iid, "#" + str([c[0] for c in self.COLS].index("status") + 1))
+                    if bb:
+                        self.status_menu([iid], self.tree.winfo_rootx() + bb[0], self.tree.winfo_rooty() + bb[1] + bb[3])
+                    return True
+            if key == "cat" and ch in ("\r", " "):
+                self.cat_menu(iid)
+                return True
+            if key == "daily" and ch in ("\r", " "):
+                it["daily"] = not it.get("daily")
+                self.save()
+                self.refresh()
+                self.nav.set(iid, key)
+                return True
+            if key == "sdate" and ch == "\r":
+                self.fix_date()
+                return True
+            if key == "del" and ch in ("\r", " "):
+                self.delete_items([iid])
+                return True
+            return False
+
+        def _on_double(self, ev):
+            t = self.tree
+            iid, key = t.identify_row(ev.y), self._col_key(t.identify_column(ev.x))
+            if iid and key and self._can_edit(iid, key):
+                self.nav.set(iid, key, see=False)
+                self.begin_cell(iid, key)
+                return "break"
+            return None
+
+        def _row_menu(self, ev):
+            """右クリック：削除・状態を変える"""
+            t = self.tree
+            iid = t.identify_row(ev.y)
+            if not iid or not self.item(iid):
+                return None
+            if iid not in t.selection():
+                t.selection_set(iid)
+            ids = [i for i in t.selection() if self.item(i)]
+            m = tk.Menu(self.win, tearoff=0, font=(self.app.fam_base, 10))
+            for k, n, _d, _c in self.STATUSES:
+                m.add_command(label=n, command=lambda k=k: self.set_status(ids, k))
+            m.add_separator()
+            m.add_command(label=f"削除（{len(ids)}品）", command=lambda: self.delete_items(ids))
+            try:
+                m.tk_popup(ev.x_root, ev.y_root)
+            finally:
+                m.grab_release()
+            return "break"
+
+        def delete_items(self, ids):
+            """品を削除（確認なし）。元に戻す（Ctrl+Z）で戻せる"""
+            ids = [i for i in ids if self.item(i)]
+            if not ids:
+                return
+            self.end_cell(commit=False, finish=False)
+            rows = self.nav.rows()
+            nxt = None
+            if self.nav.cur and self.nav.cur[0] in ids and self.nav.cur[0] in rows:   # 削除した後は下の行へ
+                k = rows.index(self.nav.cur[0])
+                nxt = next((r for r in rows[k + 1:] if r not in ids), None) or \
+                    next((r for r in reversed(rows[:k]) if r not in ids), None)
+            batch = [(n_, x) for n_, x in enumerate(self.data["items"]) if x["id"] in ids]
+            self._undo_del.append(batch)
+            self.data["items"] = [x for x in self.data["items"] if x["id"] not in ids]
+            self.save()
+            self.refresh()
+            if nxt:
+                self.nav.set(nxt, self.nav.cur[1] if self.nav.cur else "name")
+            self.lbl_msg.configure(text=f"{len(batch)} 品を削除しました（元に戻す：Ctrl+Z）")
+
+        def undo_delete(self):
+            if not self._undo_del:
+                self.lbl_msg.configure(text="元に戻す削除はありません")
+                return "break"
+            batch = self._undo_del.pop()
+            for n_, x in batch:
+                self.data["items"].insert(min(n_, len(self.data["items"])), x)
+            self.save()
+            self.refresh()
+            self.nav.set(batch[0][1]["id"], "name")
+            self.lbl_msg.configure(text=f"{len(batch)} 品を元に戻しました")
+            return "break"
 
         # ---- 状態の札：抽出表示・ドラッグで状態を変える ----
         def show_status(self, key):
@@ -18742,7 +19570,7 @@ def run_gui(path=None):
             m = tk.Menu(self.win, tearoff=0, font=(self.app.fam_base, 10))
             cur = {self.status(self.item(i)) for i in ids if self.item(i)}
             for k, n, desc, _c in self.STATUSES:
-                m.add_command(label=("● " if cur == {k} else "　 ") + f"{n}　{desc}",
+                m.add_command(label=("● " if cur == {k} else "　 ") + n,
                               command=lambda k=k: self.set_status(ids, k))
             try:
                 m.tk_popup(x, y)
@@ -18807,16 +19635,15 @@ def run_gui(path=None):
             finally:
                 m.grab_release()
 
-        def begin_cell(self, iid, key):
-            """セルの上に入力欄を重ねて、その場で書き込む"""
+        def begin_cell(self, iid, key, init=None):
+            """セルの上に入力欄を重ねて、その場で書き込む（文字の大きさ・書体はリストと同じ）。
+            init：打った文字（今の中身を置きかえる）／None：今の文字のまま（F2・ダブルクリック）"""
             self.end_cell(finish=False)
-            if key == "cat":   # カテゴリは一覧から1回で選ぶ（選んだら価格へ）
-                self.win.after(1, lambda: self.cat_menu(iid, then="price"))
+            if key == "cat":   # カテゴリは一覧から選ぶ
+                self.win.after(1, lambda: self.cat_menu(iid))
                 return
             t = self.tree
-            if iid != self.NEW:
-                self._freeze_for(iid)
-            if iid not in t.get_children():
+            if not t.exists(iid):
                 return
             t.see(iid)
             t.update_idletasks()
@@ -18829,23 +19656,15 @@ def run_gui(path=None):
             cur = "" if it is None else (str(it.get(key) if it.get(key) not in (None, "") else "") if key in ("price", "sell")
                                          else it.get(key, ""))
             v = tk.StringVar(value=cur)
-            if key == "cat":
-                e = ttk.Combobox(t, textvariable=v, values=self.data["categories"])
-            else:
-                e = ttk.Entry(t, textvariable=v, justify="right" if key in ("price", "sell") else "left",
-                              font="TkDefaultFont")   # リストの文字と同じ大きさ
-            e.place(x=x, y=y, width=w, height=h)   # 欄の幅の中に収める（隣の★の欄にはみ出さない）
+            e = ttk.Entry(t, textvariable=v, justify="right" if key in ("price", "sell") else "left",
+                          font="TkDefaultFont")   # リストの文字と同じ大きさ
+            e.place(x=x, y=y, width=w, height=h)   # 欄の幅の中に収める
             e.focus_set()
-            if isinstance(e, ttk.Entry):
-                e.select_range(0, "end")
+            GridNav.start_text(e, v, init)
             self._cell = (iid, key, v, e)
-            order = ["name", "cat", "price", "sell"]
-            no = len(order)
-            e.bind("<Return>", lambda ev: (self.end_cell(commit=True, nxt="down"), "break")[1])
-            e.bind("<KP_Enter>", lambda ev: (self.end_cell(commit=True, nxt="down"), "break")[1])
-            e.bind("<Tab>", lambda ev: (self.end_cell(commit=True, nxt=order[(order.index(key) + 1) % no]), "break")[1])
-            e.bind("<Shift-Tab>", lambda ev: (self.end_cell(commit=True, nxt=order[(order.index(key) - 1) % no]), "break")[1])
-            e.bind("<Escape>", lambda ev: (self.end_cell(commit=False), "break")[1])
+            self.nav.set(iid, key, see=False)
+            self.nav.entry_keys(e, lambda dr, dc, wrap: self.end_cell(commit=True, nxt=(dr, dc, wrap)))
+            e.bind("<Escape>", lambda ev: (self.end_cell(commit=False), self.tree.focus_set(), "break")[2])
             e.bind("<FocusOut>", lambda ev: self.win.after(1, lambda: self._focus_out(e)))
 
         def _focus_out(self, e):
@@ -18861,7 +19680,7 @@ def run_gui(path=None):
         def end_cell(self, commit=True, nxt=None, finish=None):
             """入力欄を閉じる。finish：その品の入力を終えたか（Tab で次の欄へ進むときは終えていない）"""
             if finish is None:
-                finish = nxt is None or nxt == "down"
+                finish = nxt is None or (isinstance(nxt, tuple) and nxt[0] != 0)
             cell, self._cell = self._cell, None
             if not cell:
                 return
@@ -18876,6 +19695,12 @@ def run_gui(path=None):
                     self.finish_entry()
                 elif finish:
                     self.unfreeze()
+                return
+            if iid == self.NEW and key == "name" and not val and isinstance(nxt, tuple):   # 空のまま移動
+                self.finish_entry()
+                self.nav.set(self.NEW, "name")
+                self.nav.step(*nxt)
+                self.tree.focus_set()
                 return
             if key in ("price", "sell"):
                 pr = self.price_of(val)
@@ -18907,24 +19732,14 @@ def run_gui(path=None):
                     self.data["categories"].append(val)
                 it[key] = val
             self.save()
-            self.refresh()
-            if iid in self.tree.get_children():
-                self.tree.selection_set(iid)
-                self.tree.focus(iid)
+            self.refresh()   # 並びは変えない（並べ替えは「並べ替える」ボタンで）
+            if self.tree.exists(iid):
+                self.nav.set(iid, key if key in [c[0] for c in self.COLS] else "name")
                 if iid in self._pending:
                     self.tree.see(self.NEW)   # 入力中は下の方を表示（いちばん上に飛ばない）
-            if nxt == "down":   # Enter：新しい品なら続けてカテゴリ → 価格、それ以外は次の新しい品
-                if getattr(self, "_last_new", None) == iid and key == "name":
-                    self.win.after(10, lambda: self.begin_cell(iid, "cat"))
-                elif getattr(self, "_last_new", None) == iid and key == "cat":
-                    self.win.after(10, lambda: self.begin_cell(iid, "price"))
-                elif getattr(self, "_last_new", None) == iid and key == "price":
-                    self._last_new = None
-                    self.win.after(10, lambda: self.begin_cell(self.NEW, "name"))
-            elif nxt:
-                self.win.after(10, lambda: self.begin_cell(iid, nxt))
-            if finish and iid != self.NEW and iid not in self._pending:
-                self.unfreeze()   # Enter・リストの外へ：その品の入力を終えた → 並べ直す
+            if isinstance(nxt, tuple):   # Enter・Tab・矢印：確定して隣のセルへ（エクセルと同じ）
+                self.nav.step(*nxt)
+                self.tree.focus_set()
 
         def edit_categories(self):
             """カテゴリの追加・名前の変更・削除"""
@@ -19040,12 +19855,10 @@ def run_gui(path=None):
             w.geometry(f"+{self.win.winfo_rootx() + 80}+{self.win.winfo_rooty() + 80}")
 
         def delete_sel(self):
-            ids = {i for i in self.tree.selection() if self.item(i)}
-            if not ids or not messagebox.askyesno(self.TITLE, f"{len(ids)} 件を削除しますか？", parent=self.win):
-                return
-            self.data["items"] = [x for x in self.data["items"] if x["id"] not in ids]
-            self.save()
-            self.refresh()
+            if self._cell:
+                return None   # 入力中の Delete は文字を消す
+            self.delete_items([i for i in self.tree.selection() if self.item(i)])
+            return "break"
 
         def fix_date(self):
             """状態を変えた日（変更日）を直す。Buy の品は購入日も同じ日に"""
@@ -19101,7 +19914,7 @@ def run_gui(path=None):
             if k in cur:
                 self.set_sorts([(k_, (not r_) if k_ == k else r_) for k_, r_ in self.sorts])
             else:
-                self.sort_set(k, k in ("life", "value", "price", "sell", "diff", "ratio", "hold", "added", "sdate"), add)
+                self.sort_set(k, k in ("life", "value", "price", "sell", "diff", "ratio", "dur", "added", "sdate"), add)
 
         # ---- 購入分析 ----
         def _build_analysis(self):
@@ -19113,7 +19926,7 @@ def run_gui(path=None):
             self.cb_amon = ttk.Combobox(top, textvariable=self.v_amon, state="readonly", width=10)
             self.cb_amon.pack(side="left", padx=4)
             self.cb_amon.bind("<<ComboboxSelected>>", lambda ev: self.refresh())
-            ttk.Label(top, text="◌＝Wants　●＝Buy　うすい灰色＝Hold　✕＝Clutter　◆＝Sold　円の大きさ＝価格　4以上を「高」",
+            ttk.Label(top, text="円の色の札＝状態（W・B・H・C・S）　円の大きさ＝価格　4以上を「高」　円を左の札へドラッグで状態を変更",
                       foreground="#868e96").pack(side="left", padx=8)
             pw = tk.PanedWindow(f, orient="vertical", sashwidth=6, bg="#dee2e6", bd=0)
             pw.pack(fill="both", expand=True, pady=(6, 0))
@@ -19122,8 +19935,8 @@ def run_gui(path=None):
             self.chart.bind("<Configure>", lambda ev: self.draw_chart())
             tf = ttk.Frame(pw)
             pw.add(tf, minsize=80, height=110, stretch="never")   # 月ごとの表は小さめ（境目のドラッグで広げられる）
-            cols = [("mon", "月", 80), ("buy", "購入（Buy）", 100), ("sold", "売却（Sold）", 100), ("diff", "購入−売却", 100),
-                    ("wants", "Wants", 100), ("clutter", "Clutter（節約）", 110)]
+            cols = [("mon", "月", 80), ("in_v", "購入金額", 110), ("in_n", "購入品数", 80), ("out_v", "売却金額", 110),
+                    ("out_n", "売却品数", 80)]
             t = self.mtree = ttk.Treeview(tf, columns=[c[0] for c in cols], show="headings", height=3)
             for k, txt, wd in cols:
                 t.heading(k, text=txt)
@@ -19149,32 +19962,34 @@ def run_gui(path=None):
         def months(self):
             ms = set()
             for x in self.data["items"]:
-                for d_ in (self.month_of(x), self.buy_date(x)[:7] if self.status(x) in ("buy", "sold") else ""):
-                    if d_:
-                        ms.add(d_)
+                if self.month_of(x):
+                    ms.add(self.month_of(x))
+                for _a, _b, d_ in self.transitions(x):
+                    ms.add(d_[:7])
             return sorted(ms, reverse=True)
 
         def period_stats(self, mon):
             """期間（"YYYY-MM" か "すべて"）の集計：
-            Buy＝その期間に買った品（今 Buy か Sold）、Sold＝その期間に売った品、Wants・Clutter・Hold＝その期間にその状態にした品"""
+            購入金額＝その期間に Buy → Hold にした品の価格、売却金額＝その期間に Clutter → Sold にした品の売却価格
+            （同じ品は最初の1回だけ数える）。Duration は今の品の状態ごとの日数"""
             inp = lambda d_: mon == "すべて" or (d_ or "")[:7] == mon
             R = {"quad": {k: 0 for k, _n, _d, _c in self.QUAD}, "ratio": {nm: [0, 0, 0] for _t, nm in self.RATIO_CLASSES},
-                 "ratios": [], "hold_now": [], "hold_done": []}
-            for k in self.SNAME:
-                R[k + "_n"] = R[k + "_v"] = 0
-            R["sold_cost"] = 0
+                 "ratios": [], "dur": {k: [] for k in self.SNAME}, "in_n": 0, "in_v": 0, "out_n": 0, "out_v": 0, "out_cost": 0}
             today = datetime.date.today()
             for x in self.data["items"]:
-                st, pr = self.status(x), int(x.get("price") or 0)
-                if st in ("buy", "sold") and inp(self.buy_date(x)):
-                    R["buy_n"] += 1
-                    R["buy_v"] += pr
+                pr = int(x.get("price") or 0)
+                tr = self.transitions(x)
+                buy_hold = next((d_ for a, b, d_ in tr if a == "buy" and b == "hold"), None)
+                clut_sold = next((d_ for a, b, d_ in tr if a == "clutter" and b == "sold"), None)
+                if buy_hold and inp(buy_hold):
+                    R["in_n"] += 1
+                    R["in_v"] += pr
                     R["quad"][self.quad(x)] += pr
-                if st == "sold" and inp(x.get("status_date")):
+                if clut_sold and inp(clut_sold):
                     sl = int(x.get("sell") or 0)
-                    R["sold_n"] += 1
-                    R["sold_v"] += sl
-                    R["sold_cost"] += pr
+                    R["out_n"] += 1
+                    R["out_v"] += sl
+                    R["out_cost"] += pr
                     r_ = self.ratio(x)
                     if r_ is not None:
                         g = R["ratio"][self.ratio_class(r_)]
@@ -19182,14 +19997,7 @@ def run_gui(path=None):
                         g[1] += pr
                         g[2] += sl
                         R["ratios"].append(r_)
-                if st in ("wants", "clutter", "hold") and inp(x.get("status_date")):
-                    R[st + "_n"] += 1
-                    R[st + "_v"] += pr
-                hd = self.hold_days(x, today)
-                if st == "hold":
-                    R["hold_now"].append(hd)
-                elif hd and inp(x.get("status_date")):   # Hold を終えた品（その期間に次の状態にした）
-                    R["hold_done"].append(hd)
+                R["dur"][self.status(x)].append(self.duration(x, today))
             return R
 
         def draw_chart(self):
@@ -19202,7 +20010,7 @@ def run_gui(path=None):
             side = 270   # 右：4象限の円グラフ
             h1 = max(320, int(H * 0.74))   # 上段（分析マップ）を大きく。下段は1年間の推移
             L, T = 62, 28
-            S = max(200, min(W - side - L - 20, h1 - T - 42))
+            S = max(200, min(W - side - L - 20, h1 - T - 62))   # 下に状態の凡例の分をあける
             R, B = L + S, T + S
             step = S / NL
             pos = lambda lv: (int(lv) - 0.5) * step   # 1〜6 の中心
@@ -19229,6 +20037,12 @@ def run_gui(path=None):
             c.create_text(18, (T + B) / 2, text="人\n生\n価\n値\n度\n↑", font=(fam, 9, "bold"), fill="#343a40")
             c.create_text(L, 12, anchor="w", font=(fam, 11, "bold"), fill="#212529",
                           text=f"{mon.replace('-', '年', 1)}月 の IN/OUT_Navi マップ" if mon != "すべて" else "全期間の IN/OUT_Navi マップ")
+            lgx, lgy = L, B + 46   # 状態の凡例（色と頭文字）：横軸の名前の下
+            for k_, n_, _d, col_ in self.STATUSES:
+                c.create_oval(lgx, lgy - 6, lgx + 12, lgy + 6, fill=col_, outline="")
+                c.create_text(lgx + 6, lgy, text=n_[0], font=(fam, 7, "bold"), fill="#ffffff")
+                tt_ = c.create_text(lgx + 15, lgy, anchor="w", text=n_, font=(fam, 9, "bold"), fill=col_)
+                lgx = c.bbox(tt_)[2] + 12
             rows = [x for x in self.data["items"] if mon == "すべて" or self.month_of(x) == mon]
             rows = [x for x in rows if self.status(x) != "wants" or not x.get("daily")]
             mx = max([int(x.get("price") or 0) for x in rows] + [1])
@@ -19259,8 +20073,8 @@ def run_gui(path=None):
                     st = self.status(x)
                     if st == "hold":   # Hold：うすい灰色の小さめの円で目立たせない
                         r = max(3, r * 0.7)
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#f8f9fa", outline="#212529" if hl else "#ced4da",
-                                      width=3 if hl else 1, dash=() if hl else (2, 2), tags=tg)
+                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#fff4e6", outline="#212529" if hl else self.SCOLOR["hold"],
+                                      width=3 if hl else 1.5, dash=() if hl else (2, 2), tags=tg)
                     elif st == "buy":
                         c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(col, 0.35), outline="#212529" if hl else col,
                                       width=4 if hl else 2, tags=tg)
@@ -19274,9 +20088,15 @@ def run_gui(path=None):
                         k_ = r * 0.55
                         for sx_ in (1, -1):
                             c.create_line(cx - k_, cy - k_ * sx_, cx + k_, cy + k_ * sx_, fill=mix("#e03131", 0.5), width=1.5, tags=tg)
-                    else:   # Wants：点線の白い円
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="#212529" if hl else "#868e96",
+                    else:   # Wants：水色の点線の白い円
+                        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="#212529" if hl else self.SCOLOR["wants"],
                                       width=4 if hl else 2, dash=() if hl else (3, 2), tags=tg)
+                    if r >= 6:   # 状態の札（色つきの頭文字）：W・B・H・C・S
+                        bx_, by_ = cx + r * 0.72, cy - r * 0.72
+                        rb_ = 7 if r >= 12 else 6
+                        c.create_oval(bx_ - rb_, by_ - rb_, bx_ + rb_, by_ + rb_, fill=self.SCOLOR[st], outline="#ffffff",
+                                      width=1.5, tags=tg)
+                        c.create_text(bx_, by_, text=self.SNAME[st][0], font=(fam, 7, "bold"), fill="#ffffff", tags=tg)
                     nm = x.get("name", "")
                     fsz = 8 if r >= 16 else 7
                     room = max(sub - 4, r * 2)
@@ -19328,9 +20148,9 @@ def run_gui(path=None):
             c.tag_bind("bub", "<Leave>", lambda ev: (self.chart.delete("tip"), self.chart.configure(cursor="")))
             # 右：その期間の 4象限ごとの購入金額（ドーナツ）と、状態ごとの集計
             P = self.period_stats(mon)
-            q, total = P["quad"], P["buy_v"]
+            q, total = P["quad"], P["in_v"]
             X0 = R + 28
-            c.create_text(X0, T - 16, anchor="nw", text="4象限ごとの購入金額（Buy）", font=(fam, 11, "bold"), fill="#212529")
+            c.create_text(X0, T - 16, anchor="nw", text="4象限ごとの購入金額", font=(fam, 11, "bold"), fill="#212529")
             rad = min(62, (side - 40) / 3.2)
             cx, cy = X0 + rad + 4, T + 10 + rad
             if total:
@@ -19375,17 +20195,20 @@ def run_gui(path=None):
                     c.create_text(X0 + 8, y_ - 2, anchor="nw", text=note, font=(fam, 8), fill="#868e96", width=side - 30)
                     y_ += 28
             cs = self.SCOLOR
-            line("Buy − Sold", self.yen(P["buy_v"] - P["sold_v"]), "#212529", True,
-                 f"購入 {self.yen(P['buy_v'])}（{P['buy_n']}品）− 売却 {self.yen(P['sold_v'])}（{P['sold_n']}品）")
-            line("Wants − Clutter", f"{P['wants_n'] - P['clutter_n']:+d} 品", cs["wants"], True,
-                 f"Wants {P['wants_n']}品 {self.yen(P['wants_v'])} ／ Clutter {P['clutter_n']}品 {self.yen(P['clutter_v'])}（節約）")
-            hn, hd_ = P["hold_now"], P["hold_done"]
-            line("Hold 期間", f"{len(hn)}品" + (f"・平均{sum(hn) / len(hn):.0f}日" if hn else ""), cs["hold"], False,
-                 (f"いちばん長い Hold {max(hn)}日　" if hn else "") + f"Hold を終えた品 {len(hd_)}品" +
-                 (f"（平均 {sum(hd_) / len(hd_):.0f}日）" if hd_ else ""))
+            line("購入金額（Buy → Hold）", self.yen(P["in_v"]), cs["hold"], True, f"{P['in_n']}品")
+            line("売却金額（Clutter → Sold）", self.yen(P["out_v"]), cs["sold"], True, f"{P['out_n']}品")
+            c.create_text(X0, y_, anchor="nw", text="Duration（今の状態の日数）", font=(fam, 9, "bold"), fill="#495057")
+            y_ += 18
+            for k_, n_, _d, col_ in self.STATUSES:
+                ds = P["dur"][k_]
+                c.create_text(X0 + 10, y_, anchor="nw", text=n_, font=(fam, 8, "bold"), fill=col_)
+                c.create_text(xr_, y_, anchor="ne", font=(fam, 8, "bold"), fill="#495057" if ds else "#ced4da",
+                              text=f"{len(ds)}品　平均 {sum(ds) / len(ds):.0f}日・最長 {max(ds)}日" if ds else "0品")
+                y_ += 15
+            y_ += 6
             rs = P["ratios"]
             line("売却価格 ／ 購入価格", (f"平均 {sum(rs) / len(rs):.2f}" if rs else "―"), cs["sold"], False,
-                 f"売った品 {P['sold_n']}品：購入 {self.yen(P['sold_cost'])} → 売却 {self.yen(P['sold_v'])}")
+                 f"売った品 {P['out_n']}品：購入 {self.yen(P['out_cost'])} → 売却 {self.yen(P['out_v'])}")
             for th, nm in self.RATIO_CLASSES:
                 n_, pv, sv = P["ratio"][nm]
                 rng = {"投資": "1以上", "耐久消費": "0.5〜1", "消耗品": "0.25〜0.5", "使い捨て": "0.25未満"}[nm]
@@ -19496,7 +20319,7 @@ def run_gui(path=None):
                 t.see(iid)
 
         def draw_trend(self, y, W, H):
-            """下段：1年間（選んだ月までの12か月）の推移：購入（Buy・4象限の積み上げ）と売却（Sold）の棒、その差（線）"""
+            """下段：1年間（選んだ月までの12か月）の推移：購入金額（Buy→Hold・4象限の積み上げ）と売却金額（Clutter→Sold）の棒"""
             c = self.chart
             fam = self.app.fam_base
             c.create_line(10, y - 4, W - 10, y - 4, fill="#e9ecef")
@@ -19508,12 +20331,12 @@ def run_gui(path=None):
                 m = em - 1 - k
                 ms.append(f"{ey + m // 12:04d}-{m % 12 + 1:02d}")
             stats = [self.period_stats(m) for m in ms]
-            tb, ts = sum(s_["buy_v"] for s_ in stats), sum(s_["sold_v"] for s_ in stats)
+            tb, ts = sum(s_["in_v"] for s_ in stats), sum(s_["out_v"] for s_ in stats)
             c.create_text(16, y + 2, anchor="nw", font=(fam, 11, "bold"), fill="#212529",
-                          text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入 {self.yen(tb)} − 売却 "
-                               f"{self.yen(ts)} ＝ {self.yen(tb - ts)}")
+                          text=f"1年間の推移（{ms[0].replace('-', '/')}〜{ms[-1].replace('-', '/')}）　購入金額 {self.yen(tb)}"
+                               f"　売却金額 {self.yen(ts)}")
             lx = W - 16
-            legend = [("差（購入−売却）", "#343a40", "line"), ("売却", "#7048e8", "box")] + \
+            legend = [("売却金額", "#7048e8", "box")] + \
                      [(n_, cc, "box") for _k, n_, _d, cc in reversed(self.QUAD)]
             for nm, col, kind in legend:   # 凡例
                 t = c.create_text(lx, y + 22, anchor="ne", text=nm, font=(fam, 8), fill="#495057")
@@ -19524,7 +20347,7 @@ def run_gui(path=None):
                 else:
                     c.create_rectangle(b[0] - 13, b[1] + 2, b[0] - 3, b[3] - 2, fill=col, outline="")
                     lx = b[0] - 20
-            mx = max([s_["buy_v"] for s_ in stats] + [s_["sold_v"] for s_ in stats] + [1])
+            mx = max([s_["in_v"] for s_ in stats] + [s_["out_v"] for s_ in stats] + [1])
             x0, x1 = 64, W - 16
             top, bot = y + 40, max(y + 120, H - 22)
             gw = (x1 - x0) / 12
@@ -19532,7 +20355,6 @@ def run_gui(path=None):
                 yy = bot - (bot - top) * frac
                 c.create_line(x0, yy, x1, yy, fill="#f1f3f5")
                 c.create_text(x0 - 6, yy, anchor="e", text=self.yen(mx * frac), font=(fam, 7), fill="#868e96")
-            pts = []
             for i, (m, P) in enumerate(zip(ms, stats)):
                 X = x0 + i * gw
                 yy = bot
@@ -19542,22 +20364,16 @@ def run_gui(path=None):
                         c.create_rectangle(X + gw * 0.12, yy - h_, X + gw * 0.5, yy,
                                            fill=next(cc for k, _n, _d, cc in self.QUAD if k == key), outline="#ffffff")
                     yy -= h_
-                h_ = (bot - top) * P["sold_v"] / mx   # 売却（右の棒）
+                h_ = (bot - top) * P["out_v"] / mx   # 売却金額（右の棒）
                 if h_ > 0:
                     c.create_rectangle(X + gw * 0.52, bot - h_, X + gw * 0.88, bot, fill="#7048e8", outline="#ffffff")
-                if P["buy_v"] and gw > 34:
+                if P["in_v"] and gw > 34:
                     c.create_text(X + gw * 0.31, yy - 2, anchor="s", font=(fam, 7), fill="#495057",
-                                  text=f"{P['buy_v'] / 1000:.0f}千" if P["buy_v"] >= 1000 else str(P["buy_v"]))
+                                  text=f"{P['in_v'] / 1000:.0f}千" if P["in_v"] >= 1000 else str(P["in_v"]))
                 sel = m == mon
                 c.create_text(X + gw / 2, bot + 4, anchor="n", font=(fam, 8, "bold" if sel else "normal"),
                               fill="#1c7ed6" if sel else "#495057", text=f"{int(m[5:])}月")
-                df = P["buy_v"] - P["sold_v"]
-                pts.append((X + gw / 2, bot - (bot - top) * max(0, df) / mx))
             c.create_line(x0, bot, x1, bot, fill="#adb5bd")
-            if any(s_["buy_v"] or s_["sold_v"] for s_ in stats):
-                c.create_line(*[v for p_ in pts for v in p_], fill="#343a40", width=2)
-                for px, py in pts:
-                    c.create_oval(px - 3, py - 3, px + 3, py + 3, fill="#343a40", outline="#ffffff")
 
         # ---- 表示の更新 ----
         def refresh(self):
@@ -19614,15 +20430,15 @@ def run_gui(path=None):
                 sl = x.get("sell")
                 has_sl = sl not in (None, "")
                 r_ = self.ratio(x)
-                hd = self.hold_days(x, today)
-                vals = {"status": "⠿ " + self.SNAME[st], "name": x.get("name", ""),
+                dur = self.duration(x, today)
+                vals = {"del": "✕", "status": "⠿ " + self.SNAME[st], "name": x.get("name", ""),
                         "cat": x.get("cat", "") or "（選ぶ）", "gap": "",
                         "life": self.stars(x.get("life")), "value": self.stars(x.get("value")),
                         "price": self.yen(x.get("price") or 0) if x.get("price") else "―",
                         "sell": self.yen(sl) if has_sl else ("（入力）" if st == "sold" else ""),
                         "diff": self.yen(int(x.get("price") or 0) - int(sl or 0)) if has_sl else "",
                         "ratio": f"{r_:.2f} {self.ratio_class(r_)}" if r_ is not None else "",
-                        "hold": (f"{hd}日" + ("…" if st == "hold" else "")) if (hd or st == "hold") else "",
+                        "dur": f"{dur}日",   # 今の状態の Duration（その状態にあった日数の合計。今も加算中）
                         "daily": "☑" if x.get("daily") else "☐", "quad": qn[self.quad(x)],
                         "added": (x.get("added") or "")[5:].replace("-", "/"),
                         "sdate": (x.get("status_date") or "")[2:].replace("-", "/")}
@@ -19652,7 +20468,7 @@ def run_gui(path=None):
             if show == "すべて":   # 状態ごとのまとまり：Wants → Buy → Hold → Clutter → Sold
                 for k_, n_, d_, _c in self.STATUSES:
                     xs = [x for x in body if self.status(x) == k_]
-                    section(xs, k_, f"■ {n_}　{d_}（{len(xs)}品）", f"◆ {n_} の総計")
+                    section(xs, k_, f"■ {n_}（{len(xs)}品）", f"◆ {n_} の総計")
             else:
                 section(body, show, "", f"◆ {self.SNAME[show]} の総計")
             for x in items:   # 並べ替えの後に増えた品（入力中など）は、状態にかかわらずいちばん下（消えないように）
@@ -19674,9 +20490,9 @@ def run_gui(path=None):
             self._paint_chips()
             by = {k_: [x for x in self.data["items"] if self.status(x) == k_] for k_ in self.SNAME}
             ysum = lambda xs: self.yen(sum(int(x.get("price") or 0) for x in xs))
-            sold_v = sum(int(x.get("sell") or 0) for x in by["sold"])
-            self.lbl_total.configure(text=f"Buy {ysum(by['buy'])}（{len(by['buy'])}）　Wants {ysum(by['wants'])}（{len(by['wants'])}）"
-                                          f"　Sold 売却 {self.yen(sold_v)}（{len(by['sold'])}）")
+            P_ = self.period_stats("すべて")
+            self.lbl_total.configure(text=f"購入金額 {self.yen(P_['in_v'])}（{P_['in_n']}品）　売却金額 {self.yen(P_['out_v'])}"
+                                          f"（{P_['out_n']}品）")
             sub = {}
             for x in items:   # 表示中の品のカテゴリ別の小計
                 k_ = x.get("cat") or "（カテゴリなし）"
@@ -19706,17 +20522,22 @@ def run_gui(path=None):
             self.cb_amon.configure(values=ams)
             if self.v_amon.get() not in ams:
                 self.v_amon.set(cur)
-            # 月ごとの集計表：購入（Buy）・売却（Sold）・その差・Wants・Clutter
+            # 月ごとの集計表：購入金額（Buy→Hold）・売却金額（Clutter→Sold）
             mt = self.mtree
             mt.delete(*mt.get_children())
-            tot = [0, 0, 0, 0, 0]
+            tot = [0, 0, 0, 0]
             for m_ in sorted(set(self.months()) | {cur}, reverse=True):
                 st_ = self.period_stats(m_)
-                row = [st_["buy_v"], st_["sold_v"], st_["buy_v"] - st_["sold_v"], st_["wants_v"], st_["clutter_v"]]
+                row = [st_["in_v"], st_["in_n"], st_["out_v"], st_["out_n"]]
                 tot = [a_ + b_ for a_, b_ in zip(tot, row)]
                 mt.insert("", "end", iid=m_, tags=("sel",) if m_ == self.v_amon.get() else (),
-                          values=[m_.replace("-", "/")] + [self.yen(v_) for v_ in row])
-            mt.insert("", "end", iid="__sum__", tags=("sum",), values=["総計"] + [self.yen(v_) for v_ in tot])
+                          values=[m_.replace("-", "/"), self.yen(row[0]), f"{row[1]}品", self.yen(row[2]), f"{row[3]}品"])
+            mt.insert("", "end", iid="__sum__", tags=("sum",),
+                      values=["総計", self.yen(tot[0]), f"{tot[1]}品", self.yen(tot[2]), f"{tot[3]}品"])
+            if getattr(self, "nav", None) is not None:   # 選んでいるセルの枠
+                if self.nav.cur and not t.exists(self.nav.cur[0]):
+                    self.nav.cur = None
+                self.nav.show()
             self.draw_chart()
 
     # =================================================================

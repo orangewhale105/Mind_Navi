@@ -1,4 +1,4 @@
-// Mind_Navi 買い物リスト（Android）  VERSION 1.2（versionCode 3）  最終更新日 2026-11-08
+// Mind_Navi 買い物リスト（Android）  VERSION 1.3（versionCode 4）  最終更新日 2026-11-08
 package jp.mindnavi.shopping;
 
 import android.app.Activity;
@@ -64,7 +64,7 @@ public class MainActivity extends Activity {
 
     private LinearLayout listBox;
     private TextView titleView, totalView, countView, statusView;
-    private Button tabList, tabStaples, clearDoneBtn;
+    private Button tabList, tabStaples, clearDoneBtn, sortBtn;
 
     private final Runnable saveTask = new Runnable() {
         @Override
@@ -149,10 +149,18 @@ public class MainActivity extends Activity {
                 clearDone();
             }
         });
+        sortBtn = smallButton("⇅ 並べ替える");   // 並べ替えはこのボタンで（入力・購入しても並びは変えない。PC版と同じ）
+        sortBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sortItems();
+            }
+        });
         foot.addView(totalView);
         foot.addView(countView);
         LinearLayout fr = row();
         fr.addView(statusView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        fr.addView(sortBtn);
         fr.addView(clearDoneBtn);
         foot.addView(fr);
         root.addView(foot);
@@ -420,6 +428,29 @@ public class MainActivity extends Activity {
         render();
     }
 
+    /** 「⇅ 並べ替える」：未購入 → 購入済み、その中は必要度（高→低）→ 追加した順。データの順を変える（PC版と同じ並び） */
+    private void sortItems() {
+        if (groceries == null) {
+            return;
+        }
+        List<Object> items = Json.arr(groceries, "items");
+        items.sort(new java.util.Comparator<Object>() {
+            @Override
+            public int compare(Object oa, Object ob) {
+                Map<String, Object> a = castOrEmpty(oa);
+                Map<String, Object> b = castOrEmpty(ob);
+                int c = Boolean.compare(Json.b(a, "bought"), Json.b(b, "bought"));
+                if (c != 0) {
+                    return c;
+                }
+                c = Long.compare(Json.n(a, "need", 2), Json.n(b, "need", 2));
+                return c != 0 ? c : Json.s(a, "added").compareTo(Json.s(b, "added"));
+            }
+        });
+        scheduleSave();
+        render();
+    }
+
     private void clearDone() {
         if (groceries == null) {
             return;
@@ -555,18 +586,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderItems() {
-        List<Map<String, Object>> items = list("items");
-        items.sort(new java.util.Comparator<Map<String, Object>>() {
-            @Override
-            public int compare(Map<String, Object> a, Map<String, Object> b) {   // 未購入 → 必要度（高い順） → 追加した順
-                int c = Boolean.compare(Json.b(a, "bought"), Json.b(b, "bought"));
-                if (c != 0) {
-                    return c;
-                }
-                c = Long.compare(Json.n(a, "need", 2), Json.n(b, "need", 2));
-                return c != 0 ? c : Json.s(a, "added").compareTo(Json.s(b, "added"));
-            }
-        });
+        List<Map<String, Object>> items = list("items");   // 並びはデータの順のまま（並べ替えは「⇅ 並べ替える」で。PC版と同じ）
         List<String[]> cols = columns();
         android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(this);
         LinearLayout table = new LinearLayout(this);
@@ -923,6 +943,7 @@ public class MainActivity extends Activity {
         countView.setText("購入回数　今週 " + wk + "回（" + yen(wkP) + "）・今月 " + mo + "回（" + yen(moP) + "）・今年 "
                 + yr + "回（" + yen(yrP) + "）");
         clearDoneBtn.setVisibility(showStaples ? View.GONE : View.VISIBLE);
+        sortBtn.setVisibility(showStaples ? View.GONE : View.VISIBLE);
     }
 
     // ================= 小さな部品 =================

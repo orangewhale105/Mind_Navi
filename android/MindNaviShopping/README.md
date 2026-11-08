@@ -1,7 +1,8 @@
-<!-- Mind_Navi 買い物リスト（Android）  VERSION 1.2（versionCode 3）  最終更新日 2026-11-08 -->
+<!-- Mind_Navi 買い物リスト（Android）  VERSION 1.3（versionCode 4）  最終更新日 2026-11-08 -->
 # Mind_Navi 買い物リスト（Android）
 
 ## バージョン
+- 1.3（versionCode 4、2026-11-08）：入力・購入しても並びを変えない（PC版と同じ）。「⇅ 並べ替える」ボタンで並べ替え
 - 1.2（versionCode 3、2026-11-08）：名前を Mind_Navi に変更（旧称 TaskMap）。アプリの識別名が jp.mindnavi.shopping に変わったため、旧版（TaskMap 買い物リスト）には上書きできない。旧版をアンインストールしてから入れ、データファイルを選び直す
 - 1.1（versionCode 2）：PC版に合わせて 個数・小計・総計 を追加。画面の欄は PC版と同じ（データファイルの view.groceries.layout を読む）。必要度はタップで一覧から選ぶ（表示されない不具合を修正）
 - 1.0（versionCode 1）：最初の版
