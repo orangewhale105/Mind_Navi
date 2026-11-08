@@ -8652,6 +8652,7 @@ def run_gui(path=None):
                 self._draw_month(days, occ, info, ghost, moving)
             else:
                 self._draw_timegrid(days, occ, info, ghost, moving)
+                self._draw_sun_over()   # 日の出などの線がタスクで隠れないように上にも重ねる
                 self._draw_allday(days, allday, info, moving)
                 if self._sumw(W):
                     self._draw_week_summary(days, gx0 + 7 * dw, W, H)
@@ -8843,6 +8844,7 @@ def run_gui(path=None):
             c = self.canvas
             lat, lon, tz = float(pc_["lat"]), float(pc_["lon"]), float(pc_.get("tz", 9))
             fs = self.font(6.5, bold=True)
+            over = self._sun_over = []   # タスクの上にも重ねて描く線（タスクで隠れないように）
 
             def line(x, m, col, dash, txt, right=False):
                 if m is None:
@@ -8850,6 +8852,7 @@ def run_gui(path=None):
                 y = self._cal_y(m)
                 if not (HD + 2 <= y <= H - 2):
                     return
+                over.append((x, y, dw, col, dash, f"{txt}{_fmt_hm(m)}", right))
                 c.create_line(x + 1, y, x + dw - 1, y, fill=col, width=1.5, dash=dash, tags=("suntide",))
                 if dw >= 70:
                     c.create_text(x + dw - 3 if right else x + 3, y - 1, text=f"{txt}{_fmt_hm(m)}", anchor="se" if right else "sw",
@@ -8861,7 +8864,7 @@ def run_gui(path=None):
                     line(x, st["dawn"], "#9775fa", (2, 3), "薄明")
                     line(x, st["rise"], "#f59f00", (), "日の出")
                     line(x, st["set"], "#e8590c", (), "日の入")
-                    line(x, st["dusk"], "#7048e8", (2, 3), "薄暮")
+                    line(x, st["dusk"], "#862e9c", (2, 3), "薄暮")   # Operational の紫と区別
                 if pc_.get("show_tide", True):
                     net = self._tide_cached(d)
                     if net and (net.get("hi") or net.get("lo")):
@@ -8873,6 +8876,24 @@ def run_gui(path=None):
                         line(x, m, "#1971c2", (6, 3), mk + "満", right=True)
                     for m in lo:
                         line(x, m, "#74c0fc", (3, 3), mk + "干", right=True)
+
+        def _draw_sun_over(self):
+            """薄明・日の出・日の入り・薄暮・満潮・干潮の線を、タスクの上にも細く重ねる。
+            時刻の文字は小さな地の上に出して、タスクの上でも読めるように（クリックはタスクに届く：タスクの印を付けない）"""
+            c = self.canvas
+            fs = self.font(6.5, bold=True)
+            for x, y, dw, col, dash, txt, right in getattr(self, "_sun_over", None) or []:
+                c.create_line(x + 1, y, x + dw - 1, y, fill=col, width=1, dash=dash or (5, 2), tags=("suntide_o",))
+                if dw >= 70:
+                    tx = x + dw - 3 if right else x + 3
+                    t_ = c.create_text(tx, y - 1, text=txt, anchor="se" if right else "sw", font=fs, fill=col,
+                                       tags=("suntide_o",))
+                    bb = c.bbox(t_)
+                    if bb:
+                        r_ = c.create_rectangle(bb[0] - 1, bb[1], bb[2] + 1, bb[3] - 1, fill="#ffffff", outline="",
+                                                tags=("suntide_o",))
+                        c.tag_lower(r_, t_)
+            self._sun_over = []
 
         def _draw_cal_legend(self, W, H):
             """右下の凡例：4象限の分類（右端の色帯）と緊急度（赤紫の枠）"""
@@ -19453,6 +19474,12 @@ def run_gui(path=None):
                                 padx=8, pady=6)
             self.v_saved = tk.StringVar()
             ttk.Label(nf, textvariable=self.v_saved, foreground="#868e96", wraplength=360).pack(anchor="w", pady=(4, 0))
+            # 週の振り返り：その週の毎日の振り返りを1つの欄にまとめて表示（読むだけ。書くのは日の振り返りで）
+            self.days_hd = ttk.Label(nf, text="この週の毎日の振り返り", font=(app.fam_base, 10, "bold"))
+            self.days_box = tk.Text(nf, wrap="word", font=(app.fam_base, 10), relief="solid", bd=1, padx=8, pady=6,
+                                    height=12, bg="#f8f9fa", state="disabled")
+            self.days_box.tag_configure("day", font=(app.fam_base, 10, "bold"), foreground="#1864ab", spacing1=4)
+            self.days_box.tag_configure("none", foreground="#adb5bd")
             self.note.pack(fill="both", expand=True, pady=(6, 0))
             self.note.bind("<<Modified>>", self._on_modified)
             self._key = None
@@ -19474,12 +19501,6 @@ def run_gui(path=None):
                 return d0, (d0 + datetime.timedelta(days=32)).replace(day=1) - datetime.timedelta(days=1)
             return datetime.date(d.year, 1, 1), datetime.date(d.year, 12, 31)
 
-            # 週の振り返り：その週の毎日の振り返りを1つの欄にまとめて表示（読むだけ。書くのは日の振り返りで）
-            self.days_hd = ttk.Label(nf, text="この週の毎日の振り返り", font=(app.fam_base, 10, "bold"))
-            self.days_box = tk.Text(nf, wrap="word", font=(app.fam_base, 10), relief="solid", bd=1, padx=8, pady=6,
-                                    height=12, bg="#f8f9fa", state="disabled")
-            self.days_box.tag_configure("day", font=(app.fam_base, 10, "bold"), foreground="#1864ab", spacing1=4)
-            self.days_box.tag_configure("none", foreground="#adb5bd")
         def key(self):
             d0, _d1 = self.span()
             p = self.v_period.get()
@@ -19535,33 +19556,12 @@ def run_gui(path=None):
             self.note.edit_reset()
             self._loading = False
             p = dict(self.PERIODS)[self.v_period.get()]
+            self._fill_days_box()
             self.v_ntitle.set(f"振り返りノート（{p}）")
             self.v_saved.set("グラフを見ながら書けます。書いた内容はこのマップに保存されます")
             self.v_title.set(self.title())
             self.win.title("振り返り - " + self.title())
 
-        def _on_modified(self, ev=None):
-            if self._loading or not self.note.edit_modified():
-                return
-            self.note.edit_modified(False)
-            if getattr(self, "_save_job", None):
-                self.win.after_cancel(self._save_job)
-            self._save_job = self.win.after(800, self.save_note)
-
-        def save_note(self):
-            self._save_job = None
-            if not self._key:
-                return
-            txt = self.note.get("1.0", "end-1c").rstrip()
-            notes = self.notes()
-            if txt == notes.get(self._key, ""):
-                return
-            self._fill_days_box()
-            if txt:
-                notes[self._key] = txt
-            else:
-                notes.pop(self._key, None)
-            self.app.dirty = True
         def _fill_days_box(self):
             """週を見ているときだけ、その週の7日分の振り返りを1つの欄に（日付ごとの見出しつき）"""
             box = self.days_box
@@ -19583,6 +19583,27 @@ def run_gui(path=None):
                 box.insert("end", (txt or "（書いていません）") + "\n", () if txt else ("none",))
             box.configure(state="disabled")
 
+        def _on_modified(self, ev=None):
+            if self._loading or not self.note.edit_modified():
+                return
+            self.note.edit_modified(False)
+            if getattr(self, "_save_job", None):
+                self.win.after_cancel(self._save_job)
+            self._save_job = self.win.after(800, self.save_note)
+
+        def save_note(self):
+            self._save_job = None
+            if not self._key:
+                return
+            txt = self.note.get("1.0", "end-1c").rstrip()
+            notes = self.notes()
+            if txt == notes.get(self._key, ""):
+                return
+            if txt:
+                notes[self._key] = txt
+            else:
+                notes.pop(self._key, None)
+            self.app.dirty = True
             self.app.schedule_autosave()
             self.app.update_title()
             self.v_saved.set(f"保存しました（{datetime.datetime.now():%H:%M}）。マップを保存するとファイルに書き込まれます")
