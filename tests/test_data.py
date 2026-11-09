@@ -356,6 +356,19 @@ class DataFileTest(unittest.TestCase):
                 bad.append(m.group(1))
         self.assertEqual([b for b in bad if "alarms" not in b], [])   # alarms＝カレンダーに描くための仮の写し
 
+    def test_moon_and_template(self):
+        """（5.0）月齢の形と潮の名前、振り返りのひな形の置きかえ"""
+        import datetime
+        d = datetime.date(2026, 11, 9)
+        a = app.moon_age(d)
+        self.assertTrue(0 <= a < 29.6)
+        self.assertIn(app.moon_icon(a), "🌑🌒🌓🌔🌕🌖🌗🌘")
+        self.assertEqual(app.moon_icon(0.1), "🌑")
+        self.assertEqual(app.moon_icon(14.8), "🌕")
+        self.assertIn(app.tide_name(d), ("大潮", "中潮", "小潮", "長潮", "若潮"))
+        self.assertIn("{結果}", app.REVIEW_TEMPLATE)
+        self.assertIn("{期間}", app.REVIEW_TEMPLATE)
+
     def test_fill_missing_only_adds(self):
         """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
         cur = {"a": "今", "b": "", "items": [{"id": "x", "v": "今", "memo": ""}], "tags": ["p"], "new": 1}
