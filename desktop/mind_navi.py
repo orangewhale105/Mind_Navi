@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 5.0  最終更新日 2026-11-09
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 5.1  最終更新日 2026-11-12
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v5.0。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v5.1。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -63,7 +63,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "5.0"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "5.1"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2481,16 +2481,66 @@ def inuse_path(path, pc=None):
     return os.path.join(rp_dirs(path)[1], f"inuse_{pc or rp_pc_name()}.json")
 
 
-def inuse_write(path, pc=None, now_=None):
+def inuse_write(path, pc=None, now_=None, sha=None, saved_at=None, closed=False):
+    """札を書く。【5.1】sha＝この PC が最後に保存した（または開いた）ファイルの指紋、saved_at＝保存した時刻。
+    ほかの PC は、この指紋のファイルがまだ届いていなければ、届くまで保存を待つ（inuse_unseen）。
+    閉じたときも札は消さず closed にする（閉じる直前の保存が届くまで、ほかの PC が待てるように）"""
     try:
         fp = inuse_path(path, pc)
+        old = {}
+        try:
+            with open(fp, encoding="utf-8") as f:
+                old = json.load(f)
+        except (OSError, ValueError):
+            old = {}
         os.makedirs(os.path.dirname(fp), exist_ok=True)
         with open(fp + ".tmp", "w", encoding="utf-8") as f:
             json.dump({"pc": pc or rp_pc_name(), "ver": APP_VERSION,
-                       "at": (now_ or datetime.datetime.now()).isoformat(timespec="seconds")}, f)
+                       "at": (now_ or datetime.datetime.now()).isoformat(timespec="seconds"),
+                       "sha": sha or old.get("sha"), "saved_at": saved_at or old.get("saved_at"),
+                       "closed": bool(closed)}, f)
         os.replace(fp + ".tmp", fp)
     except OSError:
         pass
+
+
+def _inuse_read_all(path):
+    d = rp_dirs(path)[1]
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    out = []
+    for f in names:
+        if f.startswith("inuse_") and f.endswith(".json"):
+            try:
+                with open(os.path.join(d, f), encoding="utf-8") as fp:
+                    r = json.load(fp)
+                if isinstance(r, dict):
+                    out.append(r)
+            except (OSError, ValueError):
+                continue
+    return out
+
+
+INUSE_SYNC_WAIT = 10 * 60   # ほかの PC の保存が届くのを待つのは、その保存から10分まで（それより古いものは待たない）
+
+
+def inuse_unseen(path, seen, pc=None, now_=None):
+    """【5.1】ほかの PC が最近保存したのに、その中身がまだこの PC に届いていない（Google ドライブの同期待ち）PC の名前。
+    seen＝この PC がディスクで見た・書いたファイルの指紋の集まり"""
+    pc, now_ = pc or rp_pc_name(), now_ or datetime.datetime.now()
+    out = []
+    for r in _inuse_read_all(path):
+        if not r.get("pc") or r.get("pc") == pc or not r.get("sha") or r.get("sha") in seen:
+            continue
+        try:
+            t = datetime.datetime.fromisoformat(str(r.get("saved_at")))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= (now_ - t).total_seconds() <= INUSE_SYNC_WAIT:
+            out.append(r["pc"])
+    return out
 
 
 def inuse_clear(path, pc=None):
@@ -2517,7 +2567,7 @@ def inuse_others(path, pc=None, now_=None):
             at = datetime.datetime.fromisoformat(str(r.get("at")))
         except (OSError, ValueError, TypeError, AttributeError):
             continue
-        if r.get("pc") and r.get("pc") != pc and 0 <= (now_ - at).total_seconds() <= INUSE_FRESH:
+        if r.get("pc") and r.get("pc") != pc and not r.get("closed") and 0 <= (now_ - at).total_seconds() <= INUSE_FRESH:
             out.append({"pc": r["pc"], "at": at, "ver": r.get("ver", "")})
     return out
 
@@ -4074,6 +4124,7 @@ def run_gui(path=None):
             self._apply_doc(self.mm, merged)
             self._base_doc[ap] = theirs
             self._file_sha[ap] = sha
+            self._see(ap, sha)
             try:
                 self._known_mtime[ap] = os.path.getmtime(ap)
             except OSError:
@@ -4089,42 +4140,73 @@ def run_gui(path=None):
             return True
 
         def _ask_inuse(self, p):
-            """ほかの PC の使用中の札があれば知らせて、「見るだけで開く」か選ぶ。札を書く"""
+            """ほかの PC で開いたままなら知らせる（5.1：知らせるだけ。ふつうに開いて保存する。
+            5.0 までの「見るだけで開く」は、入力できるのに保存しなかったので、職場で入力したものが消えた）。札を書く"""
             ap = os.path.abspath(p)
-            ro = self.__dict__.setdefault("_readonly", set())
-            ro.discard(ap)
             others = inuse_others(p)
             if others:
                 who = "、".join(f"「{o['pc']}」（{o['at'].strftime('%H:%M')} に確認）" for o in others)
-                if messagebox.askyesno(APP_NAME, f"このファイルは、ほかの PC {who}で開いたままです。\n\n"
-                                                 "はい：見るだけで開く（この PC では保存しません）\n"
-                                                 "いいえ：ふつうに開く（両方で入力しても、保存のときにまとめるので消えません）",
-                                       parent=self.root):
-                    ro.add(ap)
-                    self.root.after(300, lambda: self.set_status("見るだけで開いています（この PC では保存しません）。"
-                                                                 "編集するときは、ほかの PC で閉じてから開き直してください"))
-                    return
-            BG_WRITER.put(lambda p=p: inuse_write(p))
+                self.root.after(400, lambda: messagebox.showinfo(
+                    APP_NAME, f"このファイルは、ほかの PC {who}でも開いたままです。\n\n"
+                              "このまま入力して大丈夫です。両方の PC の入力は、保存のときにまとめるので消えません。\n"
+                              "ほかの PC の保存が Google ドライブでまだ届いていないときは、届くまで保存を待ちます。",
+                    parent=self.root))
+            sha = self._file_sha.get(ap)
+            BG_WRITER.put(lambda p=p, sha=sha: inuse_write(p, sha=sha))
             self._inuse_at = time.monotonic()
+
+        def _see(self, ap, sha):
+            """この PC がディスクで見た・書いたファイルの指紋を覚える（ほかの PC の保存が届いたかの判定用。5.1）"""
+            if sha:
+                self.__dict__.setdefault("_seen_sha", {}).setdefault(ap, set()).add(sha)
+
+        def _sync_pending(self, path):
+            """ほかの PC の保存で、まだ届いていないもの（PC の名前）。今のディスクの指紋は見たことにする"""
+            ap = os.path.abspath(path)
+            try:
+                with open(path, "rb") as f:
+                    self._see(ap, hashlib.sha1(f.read()).hexdigest())
+            except OSError:
+                pass
+            return inuse_unseen(path, self.__dict__.get("_seen_sha", {}).get(ap, set()))
+
+        def _wait_sync(self, paths, timeout=60):
+            """閉じる前：ほかの PC の保存が届くまで待つ（最長 timeout 秒。届いたら、まとめてから保存する）"""
+            end = time.monotonic() + timeout
+            while time.monotonic() < end:
+                pend = [pc for p_ in paths for pc in self._sync_pending(p_)]
+                if not pend:
+                    return True
+                self.set_status(f"「{'・'.join(dict.fromkeys(pend))}」の保存が Google ドライブで届くのを待っています…"
+                                f"（あと {int(end - time.monotonic())} 秒。届いたら両方をまとめて保存します）")
+                try:
+                    for _ in range(20):
+                        self.root.update()
+                        time.sleep(0.05)
+                except tk.TclError:
+                    return False
+            return False
 
         def _inuse_tick(self):
             """5分ごとに使用中の札を書き直す（開いている間だけ）"""
             if time.monotonic() - getattr(self, "_inuse_at", 0) < 300:
                 return
             self._inuse_at = time.monotonic()
-            ro = self.__dict__.get("_readonly", set())
             for p_ in self._open_paths():
-                if os.path.abspath(p_) not in ro:
-                    BG_WRITER.put(lambda p_=p_: inuse_write(p_))
+                BG_WRITER.put(lambda p_=p_: inuse_write(p_))
 
-        def _write_doc(self, path, mm, history=None):
+        def _write_doc(self, path, mm, history=None, force=None):
             """書きかけで壊れないよう一時ファイルに書いてから置き換える。history を渡すと元に戻す履歴も保存。
             保存の前に、データが大きく減っていないか確かめる（減っていれば前の中身を「保存前の退避」として残して知らせる）。
             1時間ごと・毎日・毎月の復元ポイントも残す"""
             ap = os.path.abspath(path)
-            if ap in self.__dict__.get("_readonly", set()):   # 見るだけで開いたファイルは保存しない（使用中の札。4.6）
-                self.set_status("見るだけで開いています（この PC では保存しません）")
-                return
+            if force is None:
+                force = getattr(self, "_force_write", False)
+            pend = [] if force or not path.lower().endswith(".json") else self._sync_pending(path)
+            if pend:   # 【5.1】ほかの PC の保存がまだ届いていない：上書きしないよう、届くまで保存を待つ（15秒ごとに見直す）
+                self.set_status(f"「{'・'.join(pend)}」の保存が Google ドライブで届くのを待っています（届いたらまとめて保存します）")
+                self.schedule_autosave(15000)
+                return False
             d_ = mm.to_dict()
             base_v = ((self.__dict__.get("_base_doc") or {}).get(ap) or {}).get("view") or {}
             for k in SHARED_VIEW_KEYS:   # 別画面のデータの欄（振り返り・IN/OUT_Navi など）は丸ごと無くならない（4.6）
@@ -4157,6 +4239,10 @@ def run_gui(path=None):
             BG_WRITER.put(lambda path=path, data=data: rp_periodic(path, data))   # 定期のバックアップ（別の処理で）
             self._groc_local = False
             self._file_sha[ap] = hashlib.sha1(data).hexdigest()
+            self._see(ap, self._file_sha[ap])
+            if path.lower().endswith(".json"):   # 【5.1】札に「最後に保存した中身の指紋」を書く（ほかの PC が届くのを待てるように）
+                sha_, at_ = self._file_sha[ap], now()
+                BG_WRITER.put(lambda path=path, sha_=sha_, at_=at_: inuse_write(path, sha=sha_, saved_at=at_))
             if mm is self.mm:
                 self._shop_deleted = 0   # 画面で削除した数（保存の守りで使う）を数え直す
             if history is not None:
@@ -4333,7 +4419,8 @@ def run_gui(path=None):
                     if j == self.cur:
                         self.mm.view.update(style=self.style, auto_layout=self.v_auto.get())
                         self.mm.store_positions(self.style)
-                    self._write_doc(path, mm, self.history if j == self.cur else s_["doc"].get("history") or [])
+                    if self._write_doc(path, mm, self.history if j == self.cur else s_["doc"].get("history") or []) is False:
+                        continue   # ほかの PC の保存が届くのを待っている（まだ保存していない）
                 except (OSError, TypeError, ValueError) as err:
                     warn.append(f"{os.path.basename(path)}（{err}）")
                     continue
@@ -4378,6 +4465,7 @@ def run_gui(path=None):
                 with open(p, "rb") as fb_:
                     raw_ = fb_.read()
                 self._file_sha[os.path.abspath(p)] = hashlib.sha1(raw_).hexdigest()
+                self._see(os.path.abspath(p), self._file_sha[os.path.abspath(p)])
                 try:   # 3方向のまとめの「前回の中身」（ほかの PC の変更と合わせるときに使う）
                     self.__dict__.setdefault("_base_doc", {})[os.path.abspath(p)] = json.loads(raw_.decode("utf-8"))
                 except ValueError:
@@ -8654,9 +8742,7 @@ def run_gui(path=None):
         def update_title(self):
             name = os.path.basename(self.path) if self.path else "無題"
             out_ = self.path and getattr(self, "data_dir", None) and not self.in_data_dir(self.path)
-            ro_ = self.path and os.path.abspath(self.path) in self.__dict__.get("_readonly", set())
-            self.root.title(f"{APP_NAME} {APP_VERSION} - {name}{'（見るだけ・保存しません）' if ro_ else ''}"
-                            f"{' *' if self.dirty else ''}"
+            self.root.title(f"{APP_NAME} {APP_VERSION} - {name}{' *' if self.dirty else ''}"
                             + ("　⚠ Googleドライブのデータフォルダの外に保存中" if out_ else ""))
             self.refresh_filter_ui()
             self.v_layout.set(self.mm.layout_mode(self.style))
@@ -17805,7 +17891,8 @@ def run_gui(path=None):
             self.apply_panel()
             self.mm.view.update(style=self.style, auto_layout=self.v_auto.get())
             self.mm.store_positions(self.style)
-            self._write_doc(self.path, self.mm, self.history)
+            if self._write_doc(self.path, self.mm, self.history) is False:
+                return False   # ほかの PC の保存が届くのを待っている（届いたら自動で保存する）
             self._autosave_warned = False
             self.dirty = False
             self._drop_backup(self.path, self.cur)
@@ -17857,7 +17944,12 @@ def run_gui(path=None):
             self.hide_qpop()
             if self.path:
                 self.dirty = True   # 開いていた状態（表示位置・展開）もデータファイルに残す
-            self.on_transition("終了")   # 保存先のあるマップは自動で保存してから終了
+            self._wait_sync(self._open_paths(), timeout=60)   # 【5.1】ほかの PC の保存が届いてから、まとめて保存する
+            self._force_write = True   # 閉じるときは（待っても届かなければ）そのまま保存する（まとめは足した方が勝つ）
+            try:
+                self.on_transition("終了")   # 保存先のあるマップは自動で保存してから終了
+            finally:
+                self._force_write = False
             start = self.cur
             for j, s in enumerate(self.slots):   # 未保存のマップを順に確認
                 if j != self.cur and s and s["doc"] and s["doc"]["dirty"]:
@@ -17869,9 +17961,8 @@ def run_gui(path=None):
                     self.switch_slot(start)
                 self.record_all_view_states()   # 展開状態・表示位置を記録して次回そのまま開く
                 self.save_settings()
-                for p_ in self._open_paths():   # 閉じた → 使用中の札を外す
-                    if os.path.abspath(p_) not in self.__dict__.get("_readonly", set()):
-                        BG_WRITER.put(lambda p_=p_: inuse_clear(p_))
+                for p_ in self._open_paths():   # 閉じた → 札は「閉じた」に（最後の保存の指紋は残す。5.1）
+                    BG_WRITER.put(lambda p_=p_: inuse_write(p_, closed=True))
                 for p_ in self._open_paths():   # 閉じたときのバックアップ（最後に保存した中身）
                     try:
                         with open(p_, "rb") as f_:
