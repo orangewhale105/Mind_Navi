@@ -369,6 +369,26 @@ class DataFileTest(unittest.TestCase):
         self.assertIn("{結果}", app.REVIEW_TEMPLATE)
         self.assertIn("{期間}", app.REVIEW_TEMPLATE)
 
+    def test_inuse_waits_for_unsynced_save(self):
+        """（5.1）ほかの PC が保存した中身（指紋）がまだ届いていなければ待つ。届いた・古い・閉じた札の指紋は待たない"""
+        import datetime
+        saved = app.BACKUP_DIR
+        app.BACKUP_DIR = os.path.join(self.tmp, "bk")
+        try:
+            f = os.path.join(self.tmp, "drive", "my.json")
+            os.makedirs(os.path.dirname(f))
+            now_ = datetime.datetime(2026, 11, 12, 9, 0, 0)
+            app.inuse_write(f, pc="WORK", now_=now_, sha="S_work", saved_at=now_.isoformat())
+            self.assertEqual(app.inuse_unseen(f, {"S_home"}, pc="HOME", now_=now_), ["WORK"])
+            self.assertEqual(app.inuse_unseen(f, {"S_home", "S_work"}, pc="HOME", now_=now_), [])   # 届いた
+            later = now_ + datetime.timedelta(minutes=30)
+            self.assertEqual(app.inuse_unseen(f, {"S_home"}, pc="HOME", now_=later), [])   # 古い保存は待たない
+            app.inuse_write(f, pc="WORK", now_=now_, closed=True)   # 閉じても指紋は残る
+            self.assertEqual(app.inuse_unseen(f, set(), pc="HOME", now_=now_), ["WORK"])
+            self.assertEqual(app.inuse_others(f, pc="HOME", now_=now_), [])   # 閉じた札は「開いたまま」に出さない
+        finally:
+            app.BACKUP_DIR = saved
+
     def test_fill_missing_only_adds(self):
         """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
         cur = {"a": "今", "b": "", "items": [{"id": "x", "v": "今", "memo": ""}], "tags": ["p"], "new": 1}
