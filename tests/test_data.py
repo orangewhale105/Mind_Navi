@@ -393,6 +393,57 @@ class DataFileTest(unittest.TestCase):
         finally:
             app.BACKUP_DIR = saved
 
+    def test_postpone_when_start_crosses_now(self):
+        """（5.3）開始時刻が今をまたいで後ろへ動いたら延期。終わる時刻を過ぎたタスクも数える。まだ始まっていないものは数えない"""
+        import datetime
+        now_ = datetime.datetime.now()
+        def task(start_min_from_now, dur=60):
+            st = now_ + datetime.timedelta(minutes=start_min_from_now)
+            if st.date() != now_.date():
+                st = now_.replace(hour=0, minute=0)
+            en = st + datetime.timedelta(minutes=dur)
+            return {"sched_date": st.date().isoformat(), "sched_start": st.strftime("%H:%M"),
+                    "sched_end": en.strftime("%H:%M"), "kind": "task", "status": "todo"}
+        tomorrow = now_.date() + datetime.timedelta(days=1)
+        ended = task(-180, 60)   # 3時間前に始まり、2時間前に終わった
+        self.assertTrue(app.note_postpone(ended, tomorrow, 9 * 60, 10 * 60))
+        self.assertEqual(ended["postpone"], 1)
+        future = task(+120)      # まだ始まっていない
+        self.assertFalse(app.note_postpone(future, tomorrow, 9 * 60, 10 * 60))
+        past = task(-180, 60)    # 今より前のまま動かした
+        self.assertFalse(app.note_postpone(past, now_.date() - datetime.timedelta(days=1), 9 * 60, 10 * 60))
+
+    def test_sheets_inside_same_file(self):
+        """（5.3）マップの分割は同じファイルの中の別画面：全体では中身を隠し先頭だけ残す、別画面ではそのツリーだけ"""
+        mm = app.MindNavi()
+        g = mm.add_node("目標")
+        a = mm.add_node("研究", parent=g)
+        a1 = mm.add_node("論文", parent=a)
+        b = mm.add_node("家", parent=g)
+        mm.nodes[a]["sheet"] = True
+        mm.hide_inbox = True
+        h = mm.hidden_nodes()
+        self.assertNotIn(a, h)
+        self.assertIn(a1, h)
+        mm.cur_sheet = a
+        h = mm.hidden_nodes()
+        self.assertEqual({k for k in mm.nodes if k not in h}, {a, a1})
+        mm.hide_inbox = False   # カレンダーなどには効かない
+        self.assertNotIn(a1, mm.hidden_nodes())
+        self.assertEqual(mm.sheet_of(a1), a)
+        self.assertIsNone(mm.sheet_of(b))
+
+    def test_hide_done_switch(self):
+        """（5.3）完了したタスクは「完了を隠す」を入れたときだけ隠す"""
+        mm = app.MindNavi()
+        g = mm.add_node("目標")
+        t = mm.add_node("済み", parent=g, kind="task", status="done")
+        u = mm.add_node("未", parent=g, kind="task")
+        self.assertNotIn(t, mm.hidden_nodes())
+        mm.view["hide_done_tasks"] = True
+        self.assertIn(t, mm.hidden_nodes())
+        self.assertNotIn(u, mm.hidden_nodes())
+
     def test_fill_missing_only_adds(self):
         """足すだけの復元：今の入力は変えず、消えた・空になったものだけ戻す。2回やっても同じ"""
         cur = {"a": "今", "b": "", "items": [{"id": "x", "v": "今", "memo": ""}], "tags": ["p"], "new": 1}

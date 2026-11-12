@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 5.2  最終更新日 2026-11-12
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 5.3  最終更新日 2026-11-12
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v5.2。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v5.3。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -63,7 +63,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "5.2"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "5.3"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -444,10 +444,48 @@ class MindNavi:
             elif n.get("hide_done_kids"):
                 for c in self.pruned_kids(nid):
                     hidden |= {c} | self.descendants(c)
+        if getattr(self, "hide_inbox", False):   # 【5.3】別画面（分割したツリー）：マップだけに効かせる
+            hidden |= self.sheet_hidden()
+        if self.view.get("hide_done_tasks"):   # 【5.3】「完了を隠す」を手で入れたときだけ、完了したタスクを隠す
+            for nid in self.done_tasks_to_hide():
+                hidden |= {nid} | self.descendants(nid)
         if self.filter_active():
             vis = self.filter_visible()
             hidden |= {k for k in self.nodes if k not in vis}
         return hidden
+
+    def sheets(self):
+        """別画面にしたツリーの先頭のノード（5.3：マップの分割。同じファイルの中の別の画面）"""
+        return [k for k, n in self.nodes.items() if n.get("sheet")]
+
+    def sheet_of(self, nid):
+        """そのノードが入っている別画面の先頭（全体の画面なら None）"""
+        for a in [nid] + self.ancestors(nid):
+            if self.nodes.get(a, {}).get("sheet"):
+                return a
+        return None
+
+    def sheet_hidden(self):
+        """今の画面に出さないノード：全体の画面では別画面の中身、別画面ではその画面のツリーの外と、その中の別画面の中身"""
+        cs = getattr(self, "cur_sheet", None)
+        out = set()
+        if cs in self.nodes:
+            keep = {cs} | self.descendants(cs)
+            out |= {k for k in self.nodes if k not in keep}
+        for sh in self.sheets():
+            if sh != cs and sh not in out:
+                out |= self.descendants(sh)   # 先頭のノードは印つきで残す（押すとその画面へ）
+        return out
+
+    def done_tasks_to_hide(self):
+        """「完了を隠す」で隠すタスク：完了したタスク（繰り返しは除く）で、下位に未完了のタスクが無いもの"""
+        out = []
+        for nid, n in self.nodes.items():
+            if n.get("kind") == "task" and n.get("status") == "done" and not n.get("repeat") and \
+                    not any(self.nodes[d].get("kind") == "task" and self.nodes[d].get("status") != "done"
+                            for d in self.descendants(nid)):
+                out.append(nid)
+        return out
 
     def layout_mode(self, style):
         mode = self.view.get("layouts", {}).get(style)
@@ -583,6 +621,9 @@ class MindNavi:
                   if is_folded(v) and self.children(n)}
         order = {n: i for i, n in enumerate(self.nodes)}
         roots = self.roots()
+        cs = getattr(self, "cur_sheet", None)
+        if cs in self.nodes and getattr(self, "hide_inbox", False):
+            roots = [cs]   # 別画面：そのツリーの先頭をいちばん上として並べる（5.3）
         if mode == "radial":
             roots.sort(key=lambda r: (self._fx(r), self._fy(r)))
         else:
@@ -1432,9 +1473,9 @@ def sched_start_dt(n):
 
 
 def note_postpone(n, new_date, new_start=None, new_end=None):
-    """延期の判定：終了時刻がまだ来ていない（今より後の）タスクを動かしたとき、開始時刻が今をまたいで
-    今以降になったら「延期」を1回数える。それ以外の移動（終わったタスク・まだ始まっていないタスクの移動など）は延期にしない。
-    時刻なしのタスクは、その日の 0:00〜24:00 として判定する"""
+    """延期の判定（5.3）：開始時刻が今より前のタスクを、開始時刻が今以降になるように動かしたら「延期」を1回数える
+    （開始時刻が今をまたいだ。終わる時刻を過ぎたタスクも数える）。まだ始まっていないタスクの移動・今より前のままの移動は数えない。
+    時刻なしのタスクは、その日の 0:00 を開始として判定する"""
     if n.get("status") == "done" or n.get("kind") == "event" or new_date is None:
         return False
     d0 = _date(n.get("sched_date"))
@@ -1444,9 +1485,6 @@ def note_postpone(n, new_date, new_start=None, new_end=None):
     nowdt = datetime.datetime.now()
     day0 = datetime.datetime.combine(d0, datetime.time())
     old_start = day0 + datetime.timedelta(minutes=sc[1] if sc else 0)
-    old_end = day0 + datetime.timedelta(minutes=sc[2] if sc else 24 * 60)
-    if old_end <= nowdt:   # もう終わっている → 延期ではない
-        return False
     if old_start >= nowdt:   # まだ始まっていない → 開始時刻は今をまたがない
         return False
     new_start_dt = datetime.datetime.combine(new_date, datetime.time()) + datetime.timedelta(minutes=new_start or 0)
@@ -5028,6 +5066,13 @@ def run_gui(path=None):
             cbd.pack(side="left", padx=1)
             cbd.bind("<<ComboboxSelected>>", lambda ev: self.set_design(next(k_ for k_, n_ in dnames.items()
                                                                              if n_ == self.v_design_name.get())))
+            sep(tl)
+            head(tl, "画面")   # 【5.3】マップの別画面（分割したツリー）
+            self.v_sheet_name = tk.StringVar(value="全体")
+            self.sheet_mb = ttk.Menubutton(tl, textvariable=self.v_sheet_name, width=-8)
+            self._sheet_menu = tk.Menu(self.sheet_mb, tearoff=0, postcommand=self._fill_sheet_menu)
+            self.sheet_mb["menu"] = self._sheet_menu
+            self.sheet_mb.pack(side="left", padx=1)
             # 右側：展開・絞り込み
             head(tr, "展開")
             ttk.Button(tr, text="★タスクリストのツリー", width=-12, command=self.focus_tree_view).pack(side="left", padx=(0, 2))
@@ -5041,8 +5086,8 @@ def run_gui(path=None):
             sep(tr)
             head(tr, "絞り込み")
             self.v_flt = {k: tk.BooleanVar() for k in ("undone", "1", "2", "3")}
-            ttk.Checkbutton(tr, text="未完了", variable=self.v_flt["undone"], style="Toolbutton", width=-5,
-                            command=lambda: self.set_filter(undone=self.v_flt["undone"].get())).pack(side="left")
+            ttk.Checkbutton(tr, text="完了を隠す", variable=self.v_flt["undone"], style="Toolbutton", width=-8,
+                            command=lambda: self.set_hide_done(self.v_flt["undone"].get())).pack(side="left")
             for k in ("1", "2", "3"):
                 ttk.Checkbutton(tr, text=f"重{k}", variable=self.v_flt[k], style="Toolbutton", width=-3,
                                 command=lambda k=k: self.set_filter(toggle_pri=k)).pack(side="left")
@@ -5543,7 +5588,10 @@ def run_gui(path=None):
             lk.add_command(label="親を付け替える…", accelerator="P", command=lambda: self.set_mode("parent"))
             menu.add_cascade(label="つながり（リンク・親）", menu=lk)
             sm = tk.Menu(menu, tearoff=0)   # マップの分割・統合
-            sm.add_command(label="このツリーを分割（別ファイル・別のマップへ）…", command=lambda: self.split_tree())
+            sm.add_command(label="⧉ このツリーを別画面にする（同じファイルの中）", command=lambda: self.make_sheet())
+            sm.add_command(label="別画面をやめる（全体のマップに戻す）", command=lambda: self.make_sheet(on=False))
+            sm.add_separator()
+            sm.add_command(label="このツリーを別ファイルに書き出す（以前の分割）…", command=lambda: self.split_tree())
             sm.add_command(label="☆ 分割先／元のマップを開く", command=lambda: self.open_file_link())
             sm.add_command(label="分割したツリーを元に戻す（再統合）…", command=lambda: self.merge_split())
             menu.add_cascade(label="分割・統合", menu=sm)
@@ -5608,6 +5656,48 @@ def run_gui(path=None):
             self.redraw()
             path = " › ".join(self.mm.nodes[a].get("label", "") for a in reversed(self._ancestors(nid)))
             self.set_status(f"マインドマップで表示: {path + ' › ' if path else ''}{n.get('label', '')}")
+            if nid in self.mm.hidden_nodes():   # 【5.3】まだ見えない → 理由を知らせて、直せるものは直す
+                self.root.after(50, lambda: self._explain_hidden(nid))
+
+        def _explain_hidden(self, nid):
+            """マップに出ないタスク：理由を知らせて、その場で表示に直せるようにする（5.3）"""
+            mm = self.mm
+            n = mm.nodes.get(nid)
+            if not n or nid not in mm.hidden_nodes():
+                return
+            lab = n.get("label", "")
+            chain = [nid] + self._ancestors(nid)
+            roots = [mm.nodes[a] for a in chain]
+            if any(x.get("adhoc_root") for x in roots):
+                messagebox.showinfo(APP_NAME, f"「{lab}」は Adhoc のタスクなので、マップには出しません（決まり）。\n"
+                                              "マップに出すときは、タスクの設定で Adhoc を外してカテゴリを選んでください。",
+                                    parent=self.root)
+                return
+            reasons, fixes = [], []
+            hid = [a for a in chain if mm.nodes[a].get("hidden")]
+            if hid:
+                reasons.append("「非表示」にしてある（" + "・".join(mm.nodes[a].get("label", "") for a in hid) + "）")
+                fixes.append(lambda: [mm.nodes[a].pop("hidden", None) for a in hid])
+            if mm.view.get("hide_done_tasks") and any(a in set(mm.done_tasks_to_hide()) for a in chain):
+                reasons.append("「完了を隠す」を入れている")
+                fixes.append(lambda: mm.view.pop("hide_done_tasks", None))
+            for flag, show, nm in (("lecture_root", "show_lectures", "講義"), ("shift_root", "show_shifts", "勤務")):
+                if any(x.get(flag) for x in roots) and not mm.view.get(show):
+                    reasons.append(f"{nm}のツリーをマップに出していない")
+                    fixes.append(lambda show=show: mm.view.__setitem__(show, True))
+            if mm.filter_active():
+                reasons.append("重要度の絞り込みをしている")
+                fixes.append(lambda: mm.view.pop("filter", None))
+            if not reasons:
+                return
+            if messagebox.askyesno(APP_NAME, f"「{lab}」がマップに出ない理由：\n・" + "\n・".join(reasons) +
+                                   "\n\nマップに表示するように直しますか？", parent=self.root):
+                self.checkpoint()
+                for fx in fixes:
+                    fx()
+                self.touch()
+                self.refresh_filter_ui()
+                self.show_in_mindmap(nid)
 
         def only_this_tree(self, nid=None):
             """選んだタスクのツリーだけを表示：上位の道筋と自分の下位はすべて開き、ほかの枝は折りたたむ"""
@@ -5731,9 +5821,89 @@ def run_gui(path=None):
             if not hasattr(self, "v_flt"):
                 return
             f = self.mm.get_filter()
-            self.v_flt["undone"].set(f["undone"])
+            self.v_flt["undone"].set(bool(self.mm.view.get("hide_done_tasks")))
             for k in ("1", "2", "3"):
                 self.v_flt[k].set(k in f["pri"])
+
+        def _fill_sheet_menu(self):
+            m = self._sheet_menu
+            m.delete(0, "end")
+            cs = getattr(self.mm, "cur_sheet", None)
+            m.add_command(label=("● " if cs not in self.mm.nodes else "　 ") + "全体（元のマップ）", command=lambda: self.set_sheet(None))
+            for k in self.mm.sheets():
+                m.add_command(label=("● " if k == cs else "　 ") + "⧉ " + (self.mm.nodes[k].get("label") or "（無題）"),
+                              command=lambda k=k: self.set_sheet(k))
+            if not self.mm.sheets():
+                m.add_command(label="（別画面はまだありません。ノードを右クリック ▸ 分割・統合 ▸ このツリーを別画面に）",
+                              state="disabled")
+
+        def set_sheet(self, sid):
+            """【5.3】マップの画面を切り替える：None＝全体、sid＝その別画面（分割したツリー）"""
+            if sid is not None and sid not in self.mm.nodes:
+                sid = None
+            self.commit_edit()
+            self.mm.cur_sheet = sid
+            self.v_sheet_name.set(("⧉ " + (self.mm.nodes[sid].get("label") or "（無題）"))[:14] if sid else "全体")
+            if self.style in TABLE_STYLES:
+                self.set_style("mindmap")
+            self.do_layout()
+            self.select(sid if sid else (self.sel if self.sel in self.mm.nodes and self.sel not in self.mm.hidden_nodes() else None))
+            self.fit_view()
+            self.redraw()
+            self.set_status(f"別画面「{self.mm.nodes[sid].get('label', '')}」を表示しています（上の「画面」で全体に戻れます）"
+                            if sid else "全体の画面を表示しています")
+
+        def make_sheet(self, nid=None, on=True):
+            """【5.3】マップの分割：そのツリーを同じファイルの中の別画面にする（on=False で元に戻す）"""
+            nid = nid or self.sel
+            n = self.mm.nodes.get(nid) if nid else None
+            if not n:
+                return
+            if on and not self.mm.parent(nid):
+                messagebox.showinfo(APP_NAME, "いちばん上のノードは別画面にできません。\n別画面にしたいツリーの先頭のノードを選んでください。",
+                                    parent=self.root)
+                return
+            self.checkpoint()
+            if on:
+                n["sheet"] = True
+            else:
+                n.pop("sheet", None)
+            self.touch()
+            self.set_sheet(nid if on else None)
+            self.set_status(f"「{n.get('label', '')}」のツリーを別画面にしました（全体の画面では ⧉ の印。押すとこの画面へ）" if on
+                            else f"「{n.get('label', '')}」の別画面をやめて、全体のマップに戻しました")
+
+        def set_hide_done(self, on):
+            """【5.3】マップで完了したタスクを隠す／表示する（手で切り替える。最初は表示）"""
+            self.commit_edit()
+            self.checkpoint()
+            if on:
+                self.mm.view["hide_done_tasks"] = True
+            else:
+                self.mm.view.pop("hide_done_tasks", None)
+            self.touch()
+            self.refresh_filter_ui()
+            self.select(self.sel if self.sel in self.mm.nodes and self.sel not in self.mm.hidden_nodes() else None)
+            self.redraw()
+            k = len(self.mm.done_tasks_to_hide())
+            self.set_status(f"完了したタスク {k} 件をマップで隠しました（もう一度「完了を隠す」を押すと表示）" if on
+                            else "完了したタスクをマップに表示しました")
+
+        def _draw_hide_done_note(self):
+            """完了を隠しているとき：マップの左上に件数と［表示する］"""
+            lb = getattr(self, "_hd_note", None)
+            on = bool(self.mm.view.get("hide_done_tasks")) and self.style not in TABLE_STYLES
+            if not on:
+                if lb is not None:
+                    lb.place_forget()
+                return
+            if lb is None:
+                lb = self._hd_note = tk.Label(self.canvas, bg="#fff3bf", fg="#5c3d00", padx=8, pady=3, cursor="hand2",
+                                              font=(self.fam_base, 9, "bold"))
+                lb.bind("<Button-1>", lambda ev: self.set_hide_done(False))
+            lb.configure(text=f"✓ 完了したタスクを {len(self.mm.done_tasks_to_hide())} 件 隠しています　［クリックで表示する］")
+            lb.place(x=8, y=8)
+            lb.lift()
 
         # ---- 非表示（非表示リスト） ----
         def hide_node(self, nid=None):
@@ -6493,7 +6663,7 @@ def run_gui(path=None):
                                   command=lambda f=freq: self.set_task_freq(f))
             dm = tk.Menu(m, tearoff=0)
             for freq, lbl in (("daily", "毎日"), ("iter", "反復タスク（実施回数を数えて表示）"),
-                              ("multi", "複数回数実施（1日に1〜5回・時刻なし）…")):
+                              ("multi", "トライアル（1日に何回か・時刻なし・回数を数える）…")):
                 dm.add_radiobutton(label=lbl, value=freq, variable=self.v_m_freq,
                                    command=lambda f=freq: self.set_task_freq(f))
             m.add_cascade(label=("● " if self.v_m_freq.get() in ("daily", "iter", "multi") else "　 ") + "毎日", menu=dm)
@@ -6558,6 +6728,7 @@ def run_gui(path=None):
             n["kind"] = "task"
             n["focus"] = True
             n["multi"] = True
+            n["trial"] = True   # 【5.3】1日に何回か実施するタスクはトライアル（実施回数を数える）
             n["day_target"] = times
             n.pop("iter", None)
             n.pop("remind", None)
@@ -7097,9 +7268,18 @@ def run_gui(path=None):
             flf.grid(row=4, column=0, columnspan=6, sticky="w", pady=(2, 0))
             for k_, (var_, txt_) in enumerate(((self.qv_reuse, "🔁 繰り返しタスク（実施回数を記録）"),
                                                (self.qv_adhoc, "Adhoc（マップに属さない）"),
-                                               (self.qv_trial, "トライアル（週の実施回数を数える）"),
                                                (self.qv_notable, "☆ 注目ノード（朝・夕方のお知らせ）"))):
                 ttk.Checkbutton(flf, text=txt_, variable=var_).grid(row=k_ // 2, column=k_ % 2, sticky="w", padx=(0, 14))
+            # 【5.3】トライアル＝実施回数を数える（以前の「複数回数実施」をまとめた）。1日の回数を 1〜5 から選ぶ
+            trf_ = ttk.Frame(flf)
+            trf_.grid(row=2, column=0, columnspan=2, sticky="w")
+            ttk.Checkbutton(trf_, text="トライアル（実施回数を数える）", variable=self.qv_trial,
+                            command=lambda: self._qpop_freq_state()).pack(side="left")
+            ttk.Label(trf_, text="1日").pack(side="left", padx=(8, 2))
+            self.qv_times = tk.StringVar(value="1")
+            self.q_times_w = ttk.Spinbox(trf_, from_=1, to=5, textvariable=self.qv_times, width=3, state="readonly")
+            self.q_times_w.pack(side="left")
+            ttk.Label(trf_, text="回（2回以上は毎日・時刻なしのデイリー）", foreground="#868e96").pack(side="left", padx=(2, 0))
             gx = ttk.LabelFrame(colL, text="指標（順位のイメージ：1＝最も高い〜6＝低い・1〜3が「高」）→ タスク分析マップ", padding=(8, 4))
             gx.pack(fill="x", pady=(8, 0))
             self.qv_idx = {}
@@ -7137,24 +7317,12 @@ def run_gui(path=None):
                 rb = ttk.Radiobutton(ff, text=lbl, value=val, variable=self.v_qfreq, command=self._qpop_freq_state)
                 rb.grid(row=0 if i < 2 else 1 if i < 6 else 2, column=(i * 2) if i < 2 else (i - 2) if i < 6 else 0,
                         columnspan=2 if i < 2 else 4 if i == 6 else 1, sticky="w", padx=(0, 10), pady=1)
-            mf_ = ttk.Frame(ff)   # 複数回数実施（1日に1〜5回）
-            mf_.grid(row=3, column=0, columnspan=4, sticky="w", pady=1)
-            ttk.Radiobutton(mf_, text="複数回数実施（毎日・時刻なし）", value="multi", variable=self.v_qfreq,
-                            command=self._qpop_freq_state).pack(side="left")
-            ttk.Label(mf_, text="1日").pack(side="left", padx=(6, 2))
-            self.qv_times = tk.StringVar(value="3")
-            self.q_times_w = ttk.Spinbox(mf_, from_=1, to=5, textvariable=self.qv_times, width=3, state="readonly")
-            self.q_times_w.pack(side="left")
-            ttk.Label(mf_, text="回").pack(side="left", padx=(2, 0))
             self.qv = {k: tk.StringVar() for k in ("date", "a", "b", "dur", "iv", "until", "alarm")}
             rf_ = ttk.Frame(g2)
             rf_.pack(fill="x", pady=(4, 0))
             ttk.Label(rf_, text="間隔").grid(row=0, column=0, sticky="w")
             w_iv = ttk.Spinbox(rf_, from_=1, to=12, textvariable=self.qv["iv"], width=4)
             w_iv.grid(row=0, column=1, sticky="w", padx=(4, 12))
-            ttk.Label(rf_, text="終了日").grid(row=0, column=2, sticky="w")
-            w_unb = DateBoxes(rf_, self.qv["until"], on_return=lambda: self.qpop_apply())
-            w_unb.grid(row=0, column=3, sticky="w", padx=(4, 0))
             ttk.Label(rf_, text="曜日").grid(row=1, column=0, sticky="w", pady=(2, 0))
             wf = ttk.Frame(rf_)
             wf.grid(row=1, column=1, columnspan=3, sticky="w", pady=(2, 0))
@@ -7166,7 +7334,7 @@ def run_gui(path=None):
                 cb.pack(side="left")
                 self.qv_wd.append(v)
                 w_wds.append(cb)
-            self.q_repeat_widgets = [w_iv] + w_unb.entries + w_wds   # 繰り返しのときだけ使える
+            self.q_repeat_widgets = [w_iv] + w_wds   # 繰り返しのときだけ使える（終了日は下の「日時」で足す）
             # ③ 日時
             g3 = ttk.LabelFrame(colR, text="日時", padding=(8, 4))
             g3.pack(fill="x", pady=(8, 0))
@@ -7174,18 +7342,22 @@ def run_gui(path=None):
             self.q_date_lbl.grid(row=0, column=0, sticky="w")
             e_db = DateBoxes(g3, self.qv["date"], on_return=lambda: self.qpop_apply())
             e_db.grid(row=0, column=1, columnspan=4, sticky="w", padx=(4, 0), pady=2)
+            ttk.Label(g3, text="終了日").grid(row=1, column=0, sticky="w")   # 【5.3】開始日のすぐ下（繰り返しの終わり）
+            w_unb = DateBoxes(g3, self.qv["until"], on_return=lambda: self.qpop_apply())
+            w_unb.grid(row=1, column=1, columnspan=4, sticky="w", padx=(4, 0), pady=2)
+            self.q_repeat_widgets += w_unb.entries
             self.qv_notime, self.qv_sound = tk.BooleanVar(), tk.BooleanVar(value=True)
             times = [_fmt_hm(m) for m in range(0, 24 * 60 + 1, CAL_SNAP)]
-            ttk.Label(g3, text="開始").grid(row=1, column=0, sticky="w")
+            ttk.Label(g3, text="開始").grid(row=2, column=0, sticky="w")
             w_a = ttk.Combobox(g3, textvariable=self.qv["a"], values=times, width=6)
-            w_a.grid(row=1, column=1, sticky="w", padx=(4, 0), pady=2)
-            ttk.Label(g3, text="Duration").grid(row=1, column=2, padx=(8, 2))
+            w_a.grid(row=2, column=1, sticky="w", padx=(4, 0), pady=2)
+            ttk.Label(g3, text="Duration").grid(row=2, column=2, padx=(8, 2))
             w_b = ttk.Combobox(g3, textvariable=self.qv["dur"], values=[_fmt_dur(m) for m in DUR_CHOICES], width=9)
-            w_b.grid(row=1, column=3, sticky="w", pady=2)   # 所要時間（「50分」「1:20」などの入力も可）
+            w_b.grid(row=2, column=3, sticky="w", pady=2)   # 所要時間（「50分」「1:20」などの入力も可）
             w_nt = ttk.Checkbutton(g3, text="時刻なし", variable=self.qv_notime, command=self._qpop_rem_state)
-            w_nt.grid(row=1, column=4, sticky="w", padx=(10, 0))
+            w_nt.grid(row=2, column=4, sticky="w", padx=(10, 0))
             self.q_end_lbl = ttk.Label(g3, text="", foreground="#868e96")
-            self.q_end_lbl.grid(row=2, column=1, columnspan=4, sticky="w")
+            self.q_end_lbl.grid(row=3, column=1, columnspan=4, sticky="w")
 
             def show_end(*_):   # 終了時刻（開始＋Duration）を表示
                 a_ = _hm(self.qv["a"].get().strip())
@@ -7281,8 +7453,8 @@ def run_gui(path=None):
             rep = self.v_qfreq.get() in ("daily", "weekdays", "weekly", "monthly", "iter", "multi")
             if hasattr(self, "q_date_lbl"):   # 繰り返しの日付は「いつから」（変えても1回分の移動ではない）
                 self.q_date_lbl.configure(text="開始日" if rep else "日付")
-            if hasattr(self, "q_times_w"):
-                self.q_times_w.configure(state="readonly" if self.v_qfreq.get() == "multi" else "disabled")
+            if hasattr(self, "q_times_w"):   # 1日の回数はトライアルのときだけ選べる（5.3）
+                self.q_times_w.configure(state="readonly" if self.qv_trial.get() else "disabled")
             for w_ in getattr(self, "q_repeat_widgets", []):
                 try:
                     w_.configure(state="normal" if rep else "disabled")
@@ -7990,6 +8162,14 @@ def run_gui(path=None):
                 warn("日付の 年・月・日 を正しく入れてください")
                 return False
             freq = self.v_qfreq.get()
+            try:
+                times_ = int(self.qv_times.get())
+            except ValueError:
+                times_ = 1
+            if self.qv_trial.get() and times_ >= 2:
+                freq = "multi"   # 【5.3】トライアルで1日2回以上＝毎日・時刻なしで回数を数える
+            elif freq == "multi":
+                freq = "daily"
             rem = self.qv_rem.get()
             notime = self.qv_notime.get() or rem or freq in ("once_day", "multi")   # 重要期限・デイリーは時刻なし
             a_txt, du_txt = self.qv["a"].get().strip(), self.qv["dur"].get().strip()
@@ -8302,7 +8482,7 @@ def run_gui(path=None):
                 self.qv_kind.set("event" if n.get("kind") == "event" else "task")
                 self.qv_reuse.set(bool(n.get("reusable")))
                 self.qv_adhoc.set(bool((self.mm.nodes.get(self.mm.parent(n["id"]) or "", {})).get("adhoc_root")))
-                self.qv_trial.set(bool(n.get("trial")))
+                self.qv_trial.set(bool(n.get("trial") or n.get("multi")))   # 複数回数実施はトライアルにまとめた（5.3）
                 self.qv_notable.set(bool(n.get("notable")))
                 for key_, v_ in self.qv_idx.items():
                     v_.set(str(n[key_]) if n.get(key_) else "")
@@ -8329,7 +8509,9 @@ def run_gui(path=None):
                 self.qv["b"].set(_fmt_hm(sc[2]) if sc else "")
                 self.qv["dur"].set(_fmt_dur(sc[2] - sc[1]) if sc and sc[2] > sc[1] else "")
                 self.qv_notime.set(bool(untimed(n)) if self._q_sess is None else sc is None)
-                self.qv_times.set(str(min(5, self._day_target(n))) if n.get("multi") else "3")
+                self.qv_times.set(str(min(5, self._day_target(n))) if n.get("multi") else "1")
+                if self.v_qfreq.get() == "multi":
+                    self.v_qfreq.set("daily")   # 画面では「毎日」＋トライアル 1日◯回
                 self.qv["iv"].set(str(rp.get("interval", 1)))
                 self.qv["until"].set(rp.get("until", ""))
                 wd = set(rp.get("byweekday") or ([d0.weekday()] if d0 else []))
@@ -8809,7 +8991,9 @@ def run_gui(path=None):
             d = json.loads(snap)
             keep_cp = self.mm.view.get("compass")   # コンパスの記入は元に戻す対象にしない
             keep = {k: self.mm.view[k] for k in UNDO_KEEP_VIEW if k in self.mm.view}   # 別画面のデータ・記入もそのまま
+            cs_ = getattr(self.mm, "cur_sheet", None)
             self.mm = MindNavi.from_dict(d)
+            self.mm.cur_sheet = cs_ if cs_ in self.mm.nodes else None   # 見ている画面（別画面）はそのまま
             self.mm.view.update(keep)
             if keep_cp is not None:
                 self.mm.view["compass"] = keep_cp
@@ -9365,6 +9549,16 @@ def run_gui(path=None):
             self.boxes[nid] = b
             self._drawn_ids.add(nid)
             self._bsize[nid] = ((b[2] - b[0]) / self.z, (b[3] - b[1]) / self.z)   # 画面の外のノードの大きさの見積もり用
+            if n.get("sheet") and not getattr(self, "_measuring", False):   # 【5.3】別画面とのつながりの印（押すと移る）
+                here = getattr(self.mm, "cur_sheet", None) == nid
+                txt_ = "↩ 元のマップへ" if here else "⧉ 別画面へ"
+                tg_ = ("n:" + nid, "sheetlink:" + nid)
+                t_ = c.create_text(b[0] + 4, b[3] + 6, anchor="nw", text=txt_, font=self.font(9, bold=True),
+                                   fill="#ffffff", tags=tg_)   # 箱のすぐ下（線と重ならないように）
+                bb_ = c.bbox(t_)
+                r_ = c.create_rectangle(bb_[0] - 5, bb_[1] - 3, bb_[2] + 5, bb_[3] + 3, fill="#1098ad", outline="#0b7285",
+                                        width=2, tags=tg_)
+                c.tag_lower(r_, t_)
             if (n.get("map_category") and not self.mm.is_level2(nid) and self.mm.parent(nid)) or \
                     (getattr(self, "catpick_mode", None) and self.mm.is_level2(nid)
                                          and not self._special_tree(nid)):   # マップのカテゴリ：紫の札
@@ -9443,6 +9637,8 @@ def run_gui(path=None):
             c.delete("old")
             c.configure(bg=STYLE_BG[self.style])
             self._update_compass()
+            if not getattr(self, "_measuring", False):
+                self._draw_hide_done_note()   # 完了を隠しているときの知らせ（5.3）
             self.mm.hide_inbox = False
             if self.style == "gantt":
                 self._redraw_gantt()
@@ -10786,6 +10982,18 @@ def run_gui(path=None):
             c.create_line(self._clw(), y1, W, y1, fill="#ced4da")
 
         # ---- タスク実績（左パネル）：達成（件数）・トライアル・繰り返し・やる気の数字 ----
+        def total_done_count(self, n):
+            """これまでに実施した回数の合計（5.3：トライアルの累計）"""
+            k = 0
+            if self._is_multi(n):
+                k += sum(int(v or 0) for v in (n.get("day_counts") or {}).values())
+            elif n.get("repeat"):
+                k += len(n.get("done_dates") or [])
+            elif n.get("status") == "done":
+                k += 1
+            k += sum(1 for se in n.get("sessions") or [] if se.get("done"))
+            return k
+
         def week_done_count(self, n, d0, d1):
             """d0〜d1（今日まで）に実施した回数（繰り返しの回・複数回実施・続き／繰り返しタスクの回もそれぞれ数える）"""
             today = datetime.date.today()
@@ -10998,7 +11206,7 @@ def run_gui(path=None):
                 c.tag_raise("weeksum")
                 return y
             # ② トライアル：1週間に何回実施したか（曜日ごとの印）
-            trials = [n for n in self.mm.nodes.values() if n.get("trial")]
+            trials = [n for n in self.mm.nodes.values() if n.get("trial") or self._is_multi(n)]   # 5.3：複数回数実施もトライアル
             y += 6
             head(f"トライアル（{word}の実施回数）")
             if trials:   # 凡例：丸の濃さ＝実施した回数、王冠の色＝王冠の数
@@ -11014,7 +11222,7 @@ def run_gui(path=None):
                 tg = n["id"]
                 c.create_text(x, y, anchor="nw", text=(n.get("label") or "（無題）")[:12], font=fn, fill="#343a40",
                               tags=("weeksum", "n:" + tg))
-                c.create_text(xr, y, anchor="ne", text=f"{k}回", font=F(10, True), fill="#e8590c",
+                c.create_text(xr, y, anchor="ne", text=f"{k}回（累計{self.total_done_count(n)}）", font=F(10, True), fill="#e8590c",
                               tags=("weeksum", "n:" + tg))
                 y += 16
                 for i, d in enumerate(days):   # 日ごとの印：赤い丸の濃さ＝実施した回数、王冠を取った日は王冠の色＝王冠の数
@@ -11037,7 +11245,7 @@ def run_gui(path=None):
                     c.create_text(cx, y + 22, text="月火水木金土日"[d.weekday()], font=fs, fill="#868e96", tags=("weeksum",))
                 y += 34
             # ②' 複数回数実施（毎日・時刻なし）：実施した回数の集計（4.9）
-            multi_ = [n for n in self.mm.nodes.values() if self._is_multi(n) and not n.get("trial")]
+            multi_ = []   # 【5.3】トライアルにまとめた（上の欄に回数・累計）
             if multi_:
                 y += 2
                 head(f"複数回数実施（{word}の回数）")
@@ -15073,6 +15281,13 @@ def run_gui(path=None):
             if self._in_minimap(ev.x, ev.y):   # 左下の全体図
                 self.drag = {"kind": "minimap", "x": ev.x, "y": ev.y}
                 return
+            sl_ = self._cal_tag(ev.x, ev.y, "sheetlink:") if self.style not in TABLE_STYLES else None
+            if sl_ and sl_ in self.mm.nodes:   # 【5.3】別画面の印：その画面へ／元のマップへ
+                if getattr(self.mm, "cur_sheet", None) == sl_:
+                    self.set_sheet(self.mm.sheet_of(self.mm.parent(sl_)) if self.mm.parent(sl_) else None)
+                else:
+                    self.set_sheet(sl_)
+                return "break"
             self.close_palette()
             if self.style != "calendar":
                 self.hide_qpop()   # どこかをクリックしたら設定の小窓は閉じる（タスクのクリックなら離した時に開き直す）
@@ -17689,6 +17904,15 @@ def run_gui(path=None):
             return True
 
         def _after_load(self):
+            if getattr(self, "v_sheet_name", None) is not None:   # 開いたら全体の画面から
+                self.mm.cur_sheet = None
+                self.v_sheet_name.set("全体")
+            f_ = self.mm.view.get("filter")
+            if isinstance(f_, dict) and f_.get("undone"):   # 【5.3】以前の「未完了」の絞り込みは外す（完了も表示するのが基本）
+                f_.pop("undone", None)
+                if not f_.get("pri"):
+                    self.mm.view.pop("filter", None)
+                self.dirty = True
             self.root.after(800, self._check_guard_on_open)   # 前回より大きく減っていないか（古い版などでの上書き）
             self.root.after(1500, self._offer_recover_once)   # 4.8：消えたデータをバックアップから集めて戻す（1回だけ聞く）
             if not self.mm.view.get("idx_rank_v1"):   # 指標を「順位（1が最も高い）」に：以前の入力（6が高い）を読みかえる
