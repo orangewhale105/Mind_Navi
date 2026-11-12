@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Mind_Navi（PC版。旧称 TaskMap）  VERSION 5.1  最終更新日 2026-11-12
+# Mind_Navi（PC版。旧称 TaskMap）  VERSION 5.2  最終更新日 2026-11-12
 # 1ファイル構成・標準ライブラリ（tkinter）のみで動作。仕様と経緯は SPEC_export.md を参照
 """
-Mind_Navi — 目標とタスクをマップ形式で整理するツール（v5.1。旧称 TaskMap）
+Mind_Navi — 目標とタスクをマップ形式で整理するツール（v5.2。旧称 TaskMap）
 
 標準ライブラリのみで動作（tkinter）。networkx があれば分析用の変換も使える。
 
@@ -63,7 +63,7 @@ import zlib
 import xml.etree.ElementTree as ET
 
 APP_NAME = "Mind_Navi"
-APP_VERSION = "5.1"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
+APP_VERSION = "5.2"   # ソース冒頭の VERSION と同じにする（自動テストで確かめる）
 FORMAT_VERSION = 2
 CSV_ENCODING = "utf-8"   # Excelで直接開くなら "utf-8-sig" に変更
 
@@ -2347,6 +2347,7 @@ RP_KINDS = (("m5", "5分ごと", 2, 5 * 60), ("m30", "30分ごと", 2, 30 * 60),
             ("w1", "1週間ごと", 2, 7 * 86400), ("mo1", "1か月ごと", 2, 30 * 86400), ("mo3", "3か月ごと", 2, 91 * 86400),
             ("y1", "1年ごと", 2, 365 * 86400),
             ("upgrade", "バージョンアップの前", 0, None),   # 0＝消さない
+            ("edit", "操作のたびの版", 60, None), ("unsaved", "保存する前の入力", 10, None),   # 5.2：データフォルダにも
             ("guard", "保存前の退避", 30, None), ("restore", "戻す前", 20, None),
             # 4.4 までの種類：一覧に出して戻せるようにするだけ（新しくは作らない・消さない）
             ("hourly", "1時間ごと（4.4まで）", 0, None), ("daily", "毎日（4.4まで）", 0, None),
@@ -3980,6 +3981,8 @@ def run_gui(path=None):
                             fp.write(txt)
                         os.replace(tmp, bp)   # 書きかけで壊れないように置き換え
                     BG_WRITER.put(write)
+                    if src and str(src).lower().endswith(".json"):   # 【5.2】保存する前の入力もデータフォルダに
+                        BG_WRITER.put(lambda src=src, txt=txt: rp_write(src, "unsaved", txt))
                     self._bak_last[bp] = txt
                     n += 1
                 except (OSError, TypeError, ValueError):
@@ -4024,6 +4027,8 @@ def run_gui(path=None):
                     for f in olds[:-VERSION_KEEP]:
                         os.remove(os.path.join(vd, f))
                 BG_WRITER.put(write)
+                if path.lower().endswith(".json"):   # 【5.2】データフォルダ（Google ドライブ）にも：どの PC からでも戻せるように
+                    BG_WRITER.put(lambda path=path, txt=txt: rp_write(path, "edit", txt))
                 self._snap_last[vd] = txt
                 return True
             except (OSError, TypeError, ValueError):

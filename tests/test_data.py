@@ -170,7 +170,11 @@ class DataFileTest(unittest.TestCase):
             with open(data_file, "w", encoding="utf-8") as f:
                 f.write('{"nodes": [], "view": {}}')
             kinds = [k for k, _n, _c, _p in app.RP_KINDS if k not in ("guard", "restore", "hourly", "daily", "monthly")]
-            self.assertEqual(kinds, ["m5", "m30", "h1", "open", "close", "d1", "d2", "d3", "w1", "mo1", "mo3", "y1", "upgrade"])
+            self.assertEqual(kinds, ["m5", "m30", "h1", "open", "close", "d1", "d2", "d3", "w1", "mo1", "mo3", "y1", "upgrade",
+                                     "edit", "unsaved"])   # 5.2：操作のたびの版・保存する前の入力もデータフォルダに
+            app.rp_write(data_file, "edit", b'{"nodes": [], "view": {"reviews": {"D:x": "work"}}}', pc="WORK")
+            self.assertTrue(any(f.startswith("edit_") and "_WORK_" in f
+                                for f in os.listdir(app.rp_dirs(data_file)[1])))   # データフォルダにある＝ほかの PC（家）からも見える
             # 4.4 までの名前のバックアップ（消さずに一覧に出す）
             for d in app.rp_dirs(data_file):
                 os.makedirs(d, exist_ok=True)
